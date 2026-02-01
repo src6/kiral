@@ -1,0 +1,1 @@
+"""Equidock Diff package."""
