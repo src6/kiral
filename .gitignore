@@ -14,3 +14,17 @@ wheels/
 
 # Local tooling
 .pre-commit-config.local.yaml
+
+# macOS noise
+.DS_Store
+
+
+# Hold docs back until finalization
+docs/
+PROJECT_SPEC.md
+
+# Large local data archives
+src/equidock_diff/data/*.tar.gz
+
+# Local dataset link
+data/
