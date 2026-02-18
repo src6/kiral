@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 
+from equidock_diff.utils.chemistry import (
+    ATOM_FEATURE_DIM,
+    ATOM_SYMBOL_TO_INDEX,
+    FeaturizeOutcome,
+    featurize_ligand,
+)
 from equidock_diff.utils.geometry import batched_centroid, relative_positions
 
 
@@ -13,6 +20,77 @@ class GraphBatch:
     positions: torch.Tensor
     edge_index: torch.Tensor
     mask: torch.Tensor | None = None
+
+
+def _normalize_element(symbol: str) -> str:
+    cleaned = "".join(ch for ch in symbol.strip() if ch.isalpha())
+    if not cleaned:
+        return "OTHER"
+    if len(cleaned) >= 2:
+        candidate = cleaned[0].upper() + cleaned[1].lower()
+        if candidate in ATOM_SYMBOL_TO_INDEX:
+            return candidate
+    candidate = cleaned[0].upper()
+    if candidate in ATOM_SYMBOL_TO_INDEX:
+        return candidate
+    return "OTHER"
+
+
+def _infer_pdb_element(line: str) -> str:
+    element = _normalize_element(line[76:78])
+    if element != "OTHER":
+        return element
+    return _normalize_element(line[12:16])
+
+
+def build_complete_edge_index(num_nodes: int, device: torch.device) -> torch.Tensor:
+    edges: list[tuple[int, int]] = []
+    for src in range(num_nodes):
+        for dst in range(num_nodes):
+            if src == dst:
+                continue
+            edges.append((src, dst))
+    if not edges:
+        return torch.empty((2, 0), device=device, dtype=torch.long)
+    return torch.tensor(edges, device=device, dtype=torch.long).t().contiguous()
+
+
+def load_protein_graph(pdb_path: str | Path) -> tuple[torch.Tensor, torch.Tensor]:
+    path = Path(pdb_path)
+    coords: list[list[float]] = []
+    symbols: list[str] = []
+
+    with path.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            if not (line.startswith("ATOM") or line.startswith("HETATM")):
+                continue
+            try:
+                x = float(line[30:38].strip())
+                y = float(line[38:46].strip())
+                z = float(line[46:54].strip())
+            except ValueError:
+                continue
+            coords.append([x, y, z])
+            symbols.append(_infer_pdb_element(line))
+
+    if not coords:
+        raise ValueError(f"No atom coordinates found in {path}.")
+
+    node_features = torch.zeros((len(coords), ATOM_FEATURE_DIM), dtype=torch.float32)
+    other_atom_index = len(ATOM_SYMBOL_TO_INDEX)
+    for atom_idx, symbol in enumerate(symbols):
+        feature_index = ATOM_SYMBOL_TO_INDEX.get(symbol, other_atom_index)
+        node_features[atom_idx, feature_index] = 1.0
+
+    positions = torch.tensor(coords, dtype=torch.float32)
+    return node_features, positions
+
+
+def _require_ligand_graph(outcome: FeaturizeOutcome, ligand_path: Path) -> torch.Tensor:
+    if outcome.skipped or outcome.graph is None:
+        reason = outcome.skip_reason or "unknown"
+        raise ValueError(f"Unable to featurize ligand {ligand_path}: {reason}.")
+    return outcome.graph
 
 
 def center_on_ligand(
@@ -36,6 +114,7 @@ def build_graph_batch(
     positions: torch.Tensor,
     edge_index: torch.Tensor,
     mask: torch.Tensor | None = None, # ligand mask
+    cutoff: float = 10.0,
 ) -> GraphBatch:
     if mask is None:
         raise ValueError("build_graph_batch requires a ligand mask.")
@@ -50,7 +129,7 @@ def build_graph_batch(
     x = torch.cat([node_features, indicator], dim=-1)
 
     # Apply spatial filtering
-    crop_mask = crop_protein_by_distance(centered_pos, ligand_mask, cutoff=10.0)
+    crop_mask = crop_protein_by_distance(centered_pos, ligand_mask, cutoff=cutoff)
     # Make sure ligand isn't cropped out of its own batch
     final_mask = crop_mask | ligand_mask
 
@@ -78,4 +157,29 @@ def build_graph_batch(
         positions=centered_pos[final_mask],
         edge_index=new_edge_index,
         mask=final_mask # New batch mask
+    )
+
+
+def load_protein_ligand_graph(
+    protein_path: str | Path,
+    ligand_path: str | Path,
+    *,
+    cutoff: float = 10.0,
+) -> GraphBatch:
+    ligand_path = Path(ligand_path)
+    ligand_graph = _require_ligand_graph(featurize_ligand(ligand_path), ligand_path)
+    protein_features, protein_positions = load_protein_graph(protein_path)
+
+    node_features = torch.cat([ligand_graph.x, protein_features], dim=0)
+    positions = torch.cat([ligand_graph.pos, protein_positions], dim=0)
+    ligand_mask = torch.zeros(node_features.size(0), dtype=torch.bool)
+    ligand_mask[: ligand_graph.x.size(0)] = True
+    edge_index = build_complete_edge_index(node_features.size(0), device=positions.device)
+
+    return build_graph_batch(
+        node_features=node_features,
+        positions=positions,
+        edge_index=edge_index,
+        mask=ligand_mask,
+        cutoff=cutoff,
     )
