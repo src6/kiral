@@ -10,6 +10,7 @@ from time import perf_counter
 import torch
 from torch import nn
 
+from equidock_diff.data.pipeline import load_protein_ligand_graph
 from equidock_diff.diffusion.schedules import linear_beta
 from equidock_diff.diffusion.sde import SDEStep, forward_step, reverse_step
 from equidock_diff.models.score_net import ScoreNet, ScoreNetConfig
@@ -25,6 +26,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--steps", type=int, default=100, help="Training steps")
     parser.add_argument("--batch-size", type=int, default=2, help="Synthetic batch size")
     parser.add_argument("--num-nodes", type=int, default=12, help="Nodes per synthetic graph")
+    parser.add_argument(
+        "--protein-path",
+        type=Path,
+        default=None,
+        help="Path to one protein PDB file for the real-pair path",
+    )
+    parser.add_argument(
+        "--ligand-path",
+        type=Path,
+        default=None,
+        help="Path to one ligand SDF file for the real-pair path",
+    )
+    parser.add_argument(
+        "--crop-cutoff",
+        type=float,
+        default=10.0,
+        help="Protein crop cutoff in Angstrom for the real-pair path",
+    )
     parser.add_argument("--hidden-dim", type=int, default=64, help="Hidden dimension")
     parser.add_argument("--num-layers", type=int, default=3, help="Number of EGNN layers")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="AdamW learning rate")
@@ -99,17 +118,55 @@ def build_synthetic_graph(
     return features, torch.cat(positions, dim=0), edge_index
 
 
-def make_model(args: argparse.Namespace, device: torch.device) -> ScoreNet:
+def make_model(
+    args: argparse.Namespace,
+    device: torch.device,
+    *,
+    node_dim: int = 4,
+) -> ScoreNet:
+    return make_model_for_node_dim(args, device, node_dim=node_dim)
+
+
+def make_model_for_node_dim(
+    args: argparse.Namespace,
+    device: torch.device,
+    *,
+    node_dim: int,
+) -> ScoreNet:
     model = ScoreNet(
         ScoreNetConfig(
             egnn=EGNNConfig(
-                node_dim=4,
+                node_dim=node_dim,
                 hidden_dim=args.hidden_dim,
                 num_layers=args.num_layers,
             )
         )
     )
     return model.to(device)
+
+
+def load_graph_inputs(
+    args: argparse.Namespace,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    has_protein = args.protein_path is not None
+    has_ligand = args.ligand_path is not None
+    if has_protein != has_ligand:
+        raise ValueError("Pass both --protein-path and --ligand-path to use the real-pair path.")
+
+    if has_protein and has_ligand:
+        batch = load_protein_ligand_graph(
+            args.protein_path,
+            args.ligand_path,
+            cutoff=args.crop_cutoff,
+        )
+        return (
+            batch.node_features.to(device),
+            batch.positions.to(device),
+            batch.edge_index.to(device),
+        )
+
+    return build_synthetic_graph(args.num_nodes, args.batch_size, device)
 
 
 def training_step(
@@ -229,26 +286,24 @@ def main() -> int:
     args = build_parser().parse_args()
     device = resolve_device(args.device)
     torch.manual_seed(args.seed)
+    node_features, positions, edge_index = load_graph_inputs(args, device)
 
     if args.dry_run:
         rot = random_rotation_matrix(1, device=device, dtype=torch.float32)
         print(f"Device: {device}")
         print(f"Rotation sample shape: {rot.shape}")
-        model = make_model(args, device)
-        node_features, positions, edge_index = build_synthetic_graph(
-            args.num_nodes, args.batch_size, device
-        )
+        model = make_model_for_node_dim(args, device, node_dim=node_features.size(-1))
         with torch.no_grad():
             score = model(node_features, positions, edge_index, torch.tensor(0.5, device=device))
+        print(
+            "Graph source: "
+            + ("real_pair" if args.protein_path is not None else "synthetic")
+        )
         print(f"Score sample shape: {score.shape}")
         return 0
 
-    model = make_model(args, device)
+    model = make_model_for_node_dim(args, device, node_dim=node_features.size(-1))
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-
-    node_features, positions, edge_index = build_synthetic_graph(
-        args.num_nodes, args.batch_size, device
-    )
 
     start = perf_counter()
     loss_rows: list[tuple[int, float, float]] = []
@@ -275,13 +330,12 @@ def main() -> int:
     write_loss_csv(args.loss_csv, loss_rows)
     print(f"loss_csv={args.loss_csv}")
 
-    sample_features, _, sample_edges = build_synthetic_graph(args.num_nodes, 1, device)
     with torch.no_grad():
         sampled_positions, trajectory = sample_positions(
             model,
-            sample_features,
-            sample_edges,
-            args.num_nodes,
+            node_features,
+            edge_index,
+            positions.size(0),
             device,
             args.sample_steps,
             args.beta_min,
