@@ -315,6 +315,7 @@ def featurize_ligand(
         if mol.GetNumConformers() == 0:
             return _skip("no_conformer", skip_counter)
         conformer = mol.GetConformer()
+        # This RDKit build exposes Is3D() but not GetNumDimensions().
         is_3d = bool(conformer.Is3D()) if hasattr(conformer, "Is3D") else True
         if not is_3d:
             return _skip("no_conformer", skip_counter)
