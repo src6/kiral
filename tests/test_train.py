@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 import torch
 
-from equidock_diff.train import build_synthetic_graph, load_graph_inputs, make_model, training_step
+from equidock_diff.train import (
+    build_synthetic_graph,
+    load_graph_inputs,
+    make_model,
+    sample_positions,
+    training_step,
+)
 
 
 class _Args:
@@ -96,3 +102,30 @@ def test_training_step_is_finite_for_real_pair_graph(tmp_path: Path) -> None:
     assert node_features.shape[1] == 17
     assert torch.isfinite(loss)
     assert beta_t > 0.0
+
+
+def test_sample_positions_stays_finite_with_clipping() -> None:
+    class _SampleArgs(_Args):
+        hidden_dim = 32
+        num_layers = 2
+
+    device = torch.device("cpu")
+    node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
+    model = make_model(_SampleArgs(), device, node_dim=node_features.shape[1])
+
+    sampled_positions, trajectory = sample_positions(
+        model,
+        node_features,
+        edge_index,
+        positions.size(0),
+        device,
+        sample_steps=8,
+        beta_min=0.1,
+        beta_max=2.0,
+        score_clip=10.0,
+        position_clip=50.0,
+    )
+
+    assert torch.isfinite(sampled_positions).all()
+    assert len(trajectory) == 9
+    assert torch.isfinite(trajectory[-1]).all()

@@ -55,6 +55,29 @@ def build_complete_edge_index(num_nodes: int, device: torch.device) -> torch.Ten
     return torch.tensor(edges, device=device, dtype=torch.long).t().contiguous()
 
 
+def build_radius_edge_index(
+    positions: torch.Tensor,
+    *,
+    cutoff: float,
+) -> torch.Tensor:
+    if positions.dim() != 2 or positions.size(-1) != 3:
+        raise ValueError("positions must have shape [N, 3].")
+    if positions.size(0) == 0:
+        return torch.empty((2, 0), device=positions.device, dtype=torch.long)
+
+    diff = positions.unsqueeze(1) - positions.unsqueeze(0)
+    dist = torch.norm(diff, dim=-1)
+    keep = (dist <= cutoff) & ~torch.eye(
+        positions.size(0),
+        device=positions.device,
+        dtype=torch.bool,
+    )
+    edge_index = keep.nonzero(as_tuple=False).t().contiguous()
+    if edge_index.numel() == 0:
+        return torch.empty((2, 0), device=positions.device, dtype=torch.long)
+    return edge_index
+
+
 def load_protein_graph(pdb_path: str | Path) -> tuple[torch.Tensor, torch.Tensor]:
     path = Path(pdb_path)
     coords: list[list[float]] = []
@@ -165,6 +188,7 @@ def load_protein_ligand_graph(
     ligand_path: str | Path,
     *,
     cutoff: float = 10.0,
+    edge_cutoff: float = 4.5,
 ) -> GraphBatch:
     ligand_path = Path(ligand_path)
     ligand_graph = _require_ligand_graph(featurize_ligand(ligand_path), ligand_path)
@@ -174,7 +198,7 @@ def load_protein_ligand_graph(
     positions = torch.cat([ligand_graph.pos, protein_positions], dim=0)
     ligand_mask = torch.zeros(node_features.size(0), dtype=torch.bool)
     ligand_mask[: ligand_graph.x.size(0)] = True
-    edge_index = build_complete_edge_index(node_features.size(0), device=positions.device)
+    edge_index = build_radius_edge_index(positions, cutoff=edge_cutoff)
 
     return build_graph_batch(
         node_features=node_features,

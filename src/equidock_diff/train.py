@@ -44,12 +44,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=10.0,
         help="Protein crop cutoff in Angstrom for the real-pair path",
     )
+    parser.add_argument(
+        "--edge-cutoff",
+        type=float,
+        default=4.5,
+        help="Edge radius in Angstrom for the real-pair path",
+    )
     parser.add_argument("--hidden-dim", type=int, default=64, help="Hidden dimension")
     parser.add_argument("--num-layers", type=int, default=3, help="Number of EGNN layers")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="AdamW learning rate")
     parser.add_argument("--beta-min", type=float, default=0.1, help="VP-SDE beta minimum")
     parser.add_argument("--beta-max", type=float, default=2.0, help="VP-SDE beta maximum")
     parser.add_argument("--sample-steps", type=int, default=25, help="Reverse diffusion steps")
+    parser.add_argument(
+        "--sample-score-clip",
+        type=float,
+        default=10.0,
+        help="Clamp score predictions during reverse diffusion",
+    )
+    parser.add_argument(
+        "--sample-position-clip",
+        type=float,
+        default=50.0,
+        help="Clamp coordinates during reverse diffusion",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -159,6 +177,7 @@ def load_graph_inputs(
             args.protein_path,
             args.ligand_path,
             cutoff=args.crop_cutoff,
+            edge_cutoff=getattr(args, "edge_cutoff", 4.5),
         )
         return (
             batch.node_features.to(device),
@@ -197,6 +216,8 @@ def sample_positions(
     sample_steps: int,
     beta_min: float,
     beta_max: float,
+    score_clip: float,
+    position_clip: float,
 ) -> tuple[torch.Tensor, list[torch.Tensor]]:
     positions = torch.randn(num_nodes, 3, device=device, dtype=torch.float32)
     trajectory = [positions.detach().cpu().clone()]
@@ -207,7 +228,17 @@ def sample_positions(
         )
         beta_t = linear_beta(t, beta_min, beta_max)
         score = model(node_features, positions, edge_index, t)
+        score = torch.nan_to_num(score, nan=0.0, posinf=score_clip, neginf=-score_clip)
+        score = score.clamp(-score_clip, score_clip)
         positions = reverse_step(positions, SDEStep(t=t, dt=dt), score, beta_t)
+        positions = torch.nan_to_num(
+            positions,
+            nan=0.0,
+            posinf=position_clip,
+            neginf=-position_clip,
+        )
+        positions = positions - positions.mean(dim=0, keepdim=True)
+        positions = positions.clamp(-position_clip, position_clip)
         trajectory.append(positions.detach().cpu().clone())
     return positions, trajectory
 
@@ -340,6 +371,8 @@ def main() -> int:
             args.sample_steps,
             args.beta_min,
             args.beta_max,
+            args.sample_score_clip,
+            args.sample_position_clip,
         )
     write_pdb(args.output, sampled_positions)
     write_trajectory_pdb(args.trajectory_output, trajectory)
