@@ -40,6 +40,41 @@ def test_build_graph_batch_centers_ligand_and_crops_far_protein() -> None:
     assert batch.node_features[2, -1].item() == 0.0
 
 
+def test_build_graph_batch_is_translation_consistent() -> None:
+    node_features = torch.arange(64, dtype=torch.float32).view(4, 16)
+    positions = torch.tensor(
+        [
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 4.0, 0.0],
+            [0.0, 11.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    ligand_mask = torch.tensor([True, True, False, False])
+    translation = torch.tensor([7.5, -3.0, 2.25], dtype=torch.float32)
+
+    batch = build_graph_batch(
+        node_features,
+        positions,
+        build_radius_edge_index(positions, cutoff=4.5),
+        ligand_mask,
+        cutoff=8.0,
+    )
+    translated_batch = build_graph_batch(
+        node_features,
+        positions + translation,
+        build_radius_edge_index(positions + translation, cutoff=4.5),
+        ligand_mask,
+        cutoff=8.0,
+    )
+
+    assert torch.equal(batch.mask, translated_batch.mask)
+    assert torch.equal(batch.edge_index, translated_batch.edge_index)
+    assert torch.allclose(batch.node_features, translated_batch.node_features)
+    assert torch.allclose(batch.positions, translated_batch.positions, atol=1e-6)
+
+
 def test_load_protein_graph_reads_atom_coordinates_and_features(tmp_path: Path) -> None:
     pdb_path = tmp_path / "toy_protein.pdb"
     pdb_path.write_text(
