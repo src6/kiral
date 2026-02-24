@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import shlex
+import sys
 from pathlib import Path
 from time import perf_counter
 
@@ -91,6 +93,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("docs/training/trajectory_plot.png"),
         help="Path for the optional trajectory plot image",
+    )
+    parser.add_argument(
+        "--experiment-log",
+        type=Path,
+        default=None,
+        help="Optional markdown log capturing command, settings, and key metrics",
     )
     return parser
 
@@ -313,11 +321,57 @@ def maybe_write_plot(
     return True
 
 
+def write_experiment_log(
+    path: Path,
+    *,
+    command: str,
+    device: torch.device,
+    graph_source: str,
+    args: argparse.Namespace,
+    loss_rows: list[tuple[int, float, float]],
+    training_seconds: float,
+    node_count: int,
+    edge_count: int,
+    sample_path: Path,
+    trajectory_path: Path,
+    loss_csv_path: Path,
+    plot_path: Path | None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    final_step, final_loss, final_beta = loss_rows[-1]
+    best_loss = min(row[1] for row in loss_rows)
+    lines = [
+        "# Experiment Log",
+        "",
+        f"- Command: `{command}`",
+        f"- Seed: `{args.seed}`",
+        f"- Device: `{device}`",
+        f"- Graph source: `{graph_source}`",
+        f"- Training steps: `{args.steps}`",
+        f"- Sample steps: `{args.sample_steps}`",
+        f"- Node count: `{node_count}`",
+        f"- Edge count: `{edge_count}`",
+        f"- Crop cutoff: `{args.crop_cutoff}`",
+        f"- Edge cutoff: `{args.edge_cutoff}`",
+        f"- Final loss: `{final_loss:.6f}` at step `{final_step}`",
+        f"- Best loss: `{best_loss:.6f}`",
+        f"- Final beta_t: `{final_beta:.4f}`",
+        f"- Training seconds: `{training_seconds:.3f}`",
+        f"- Loss CSV: `{loss_csv_path}`",
+        f"- Sample artifact: `{sample_path}`",
+        f"- Trajectory artifact: `{trajectory_path}`",
+    ]
+    if plot_path is not None:
+        lines.append(f"- Plot artifact: `{plot_path}`")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     args = build_parser().parse_args()
     device = resolve_device(args.device)
     torch.manual_seed(args.seed)
     node_features, positions, edge_index = load_graph_inputs(args, device)
+    graph_source = "real_pair" if args.protein_path is not None else "synthetic"
 
     if args.dry_run:
         rot = random_rotation_matrix(1, device=device, dtype=torch.float32)
@@ -326,10 +380,7 @@ def main() -> int:
         model = make_model_for_node_dim(args, device, node_dim=node_features.size(-1))
         with torch.no_grad():
             score = model(node_features, positions, edge_index, torch.tensor(0.5, device=device))
-        print(
-            "Graph source: "
-            + ("real_pair" if args.protein_path is not None else "synthetic")
-        )
+        print("Graph source: " + graph_source)
         print(f"Score sample shape: {score.shape}")
         return 0
 
@@ -378,10 +429,28 @@ def main() -> int:
     write_trajectory_pdb(args.trajectory_output, trajectory)
     print(f"sample_path={args.output}")
     print(f"trajectory_path={args.trajectory_output}")
-    if maybe_write_plot(args.plot_output, trajectory, loss_rows):
+    plot_written = maybe_write_plot(args.plot_output, trajectory, loss_rows)
+    if plot_written:
         print(f"plot_path={args.plot_output}")
     else:
         print("plot_path=not_written (matplotlib not available)")
+    if args.experiment_log is not None:
+        write_experiment_log(
+            args.experiment_log,
+            command=f"uv run python -m equidock_diff.train {shlex.join(sys.argv[1:])}",
+            device=device,
+            graph_source=graph_source,
+            args=args,
+            loss_rows=loss_rows,
+            training_seconds=elapsed,
+            node_count=positions.size(0),
+            edge_count=edge_index.size(1),
+            sample_path=args.output,
+            trajectory_path=args.trajectory_output,
+            loss_csv_path=args.loss_csv,
+            plot_path=args.plot_output if plot_written else None,
+        )
+        print(f"experiment_log={args.experiment_log}")
     return 0
 
 

@@ -11,6 +11,7 @@ from equidock_diff.train import (
     make_model,
     sample_positions,
     training_step,
+    write_experiment_log,
 )
 
 
@@ -129,3 +130,43 @@ def test_sample_positions_stays_finite_with_clipping() -> None:
     assert torch.isfinite(sampled_positions).all()
     assert len(trajectory) == 9
     assert torch.isfinite(trajectory[-1]).all()
+
+
+def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
+    class _LogArgs(_Args):
+        seed = 7
+        steps = 5
+        sample_steps = 10
+        crop_cutoff = 8.0
+        edge_cutoff = 4.5
+
+    log_path = tmp_path / "experiment.md"
+    output_path = tmp_path / "sample.pdb"
+    trajectory_path = tmp_path / "trajectory.pdb"
+    loss_csv_path = tmp_path / "loss.csv"
+    plot_path = tmp_path / "plot.png"
+
+    write_experiment_log(
+        log_path,
+        command="uv run python -m equidock_diff.train --steps 5",
+        device=torch.device("cpu"),
+        graph_source="real_pair",
+        args=_LogArgs(),
+        loss_rows=[(1, 1.5, 0.2), (5, 0.25, 0.9)],
+        training_seconds=0.42,
+        node_count=147,
+        edge_count=2992,
+        sample_path=output_path,
+        trajectory_path=trajectory_path,
+        loss_csv_path=loss_csv_path,
+        plot_path=plot_path,
+    )
+
+    contents = log_path.read_text(encoding="utf-8")
+    assert "uv run python -m equidock_diff.train --steps 5" in contents
+    assert "- Seed: `7`" in contents
+    assert "- Graph source: `real_pair`" in contents
+    assert "- Node count: `147`" in contents
+    assert "- Edge count: `2992`" in contents
+    assert "- Final loss: `0.250000` at step `5`" in contents
+    assert str(output_path) in contents
