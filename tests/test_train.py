@@ -7,10 +7,12 @@ import torch
 
 from equidock_diff.train import (
     build_synthetic_graph,
+    ligand_mask_from_features,
     load_graph_inputs,
     make_model,
     sample_positions,
     training_step,
+    write_ligand_artifacts,
     write_experiment_log,
 )
 
@@ -170,3 +172,59 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
     assert "- Edge count: `2992`" in contents
     assert "- Final loss: `0.250000` at step `5`" in contents
     assert str(output_path) in contents
+
+
+def test_ligand_mask_from_features_uses_indicator_column() -> None:
+    node_features = torch.tensor(
+        [
+            [0.1, 0.0, 1.0],
+            [0.2, 0.0, 1.0],
+            [0.3, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    mask = ligand_mask_from_features(node_features)
+
+    assert mask.tolist() == [True, True, False]
+
+
+def test_write_ligand_artifacts_filters_to_ligand_nodes(tmp_path: Path) -> None:
+    node_features = torch.tensor(
+        [
+            [0.0, 1.0],
+            [0.0, 1.0],
+            [0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    sampled_positions = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [9.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    trajectory = [
+        sampled_positions.clone(),
+        sampled_positions + 1.0,
+    ]
+    ligand_output = tmp_path / "ligand_sample.pdb"
+    ligand_traj_output = tmp_path / "ligand_traj.pdb"
+
+    written_sample, written_trajectory = write_ligand_artifacts(
+        node_features=node_features,
+        sampled_positions=sampled_positions,
+        trajectory=trajectory,
+        ligand_output=ligand_output,
+        ligand_trajectory_output=ligand_traj_output,
+    )
+
+    assert written_sample == ligand_output
+    assert written_trajectory == ligand_traj_output
+    sample_lines = ligand_output.read_text(encoding="utf-8").splitlines()
+    trajectory_lines = ligand_traj_output.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in sample_lines if line.startswith("ATOM")]) == 2
+    assert len([line for line in trajectory_lines if line.startswith("MODEL")]) == 2
+    assert "   9.000" not in ligand_output.read_text(encoding="utf-8")

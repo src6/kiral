@@ -83,6 +83,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for the reverse diffusion trajectory artifact",
     )
     parser.add_argument(
+        "--ligand-output",
+        type=Path,
+        default=None,
+        help="Optional path for a ligand-only sample artifact",
+    )
+    parser.add_argument(
+        "--ligand-trajectory-output",
+        type=Path,
+        default=None,
+        help="Optional path for a ligand-only reverse diffusion trajectory artifact",
+    )
+    parser.add_argument(
         "--loss-csv",
         type=Path,
         default=Path("docs/training/loss_trace.csv"),
@@ -280,6 +292,37 @@ def write_trajectory_pdb(path: Path, trajectory: list[torch.Tensor]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def ligand_mask_from_features(node_features: torch.Tensor) -> torch.Tensor:
+    if node_features.size(-1) < 1:
+        raise ValueError("node_features must include the ligand indicator column.")
+    return node_features[:, -1] > 0.5
+
+
+def write_ligand_artifacts(
+    *,
+    node_features: torch.Tensor,
+    sampled_positions: torch.Tensor,
+    trajectory: list[torch.Tensor],
+    ligand_output: Path | None,
+    ligand_trajectory_output: Path | None,
+) -> tuple[Path | None, Path | None]:
+    ligand_mask = ligand_mask_from_features(node_features).detach().cpu()
+    ligand_positions = sampled_positions.detach().cpu()[ligand_mask]
+    ligand_trajectory = [frame[ligand_mask] for frame in trajectory]
+
+    written_sample = None
+    if ligand_output is not None:
+        write_pdb(ligand_output, ligand_positions)
+        written_sample = ligand_output
+
+    written_trajectory = None
+    if ligand_trajectory_output is not None:
+        write_trajectory_pdb(ligand_trajectory_output, ligand_trajectory)
+        written_trajectory = ligand_trajectory_output
+
+    return written_sample, written_trajectory
+
+
 def write_loss_csv(path: Path, rows: list[tuple[int, float, float]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -429,6 +472,17 @@ def main() -> int:
     write_trajectory_pdb(args.trajectory_output, trajectory)
     print(f"sample_path={args.output}")
     print(f"trajectory_path={args.trajectory_output}")
+    ligand_sample_path, ligand_trajectory_path = write_ligand_artifacts(
+        node_features=node_features,
+        sampled_positions=sampled_positions,
+        trajectory=trajectory,
+        ligand_output=args.ligand_output,
+        ligand_trajectory_output=args.ligand_trajectory_output,
+    )
+    if ligand_sample_path is not None:
+        print(f"ligand_sample_path={ligand_sample_path}")
+    if ligand_trajectory_path is not None:
+        print(f"ligand_trajectory_path={ligand_trajectory_path}")
     plot_written = maybe_write_plot(args.plot_output, trajectory, loss_rows)
     if plot_written:
         print(f"plot_path={args.plot_output}")
