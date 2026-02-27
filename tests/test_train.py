@@ -5,15 +5,17 @@ from pathlib import Path
 import pytest
 import torch
 
+from equidock_diff.utils.artifacts import (
+    ligand_mask_from_features,
+    write_experiment_log,
+    write_ligand_artifacts,
+)
 from equidock_diff.train import (
     build_synthetic_graph,
-    ligand_mask_from_features,
     load_graph_inputs,
     make_model,
     sample_positions,
     training_step,
-    write_ligand_artifacts,
-    write_experiment_log,
 )
 
 
