@@ -20,6 +20,7 @@ class GraphBatch:
     positions: torch.Tensor
     edge_index: torch.Tensor
     mask: torch.Tensor | None = None
+    ligand_bond_index: torch.Tensor | None = None
 
 
 def _normalize_element(symbol: str) -> str:
@@ -137,6 +138,7 @@ def build_graph_batch(
     positions: torch.Tensor,
     edge_index: torch.Tensor,
     mask: torch.Tensor | None = None, # ligand mask
+    ligand_bond_index: torch.Tensor | None = None,
     cutoff: float = 10.0,
 ) -> GraphBatch:
     if mask is None:
@@ -175,11 +177,19 @@ def build_graph_batch(
     # Remap edge indices
     new_edge_index = idx_map[filtered_edge_index]
 
+    remapped_ligand_bond_index = None
+    if ligand_bond_index is not None:
+        bond_src, bond_dst = ligand_bond_index
+        bond_keep_mask = final_mask[bond_src] & final_mask[bond_dst]
+        filtered_ligand_bond_index = ligand_bond_index[:, bond_keep_mask]
+        remapped_ligand_bond_index = idx_map[filtered_ligand_bond_index]
+
     return GraphBatch(
         node_features=x[final_mask],
         positions=centered_pos[final_mask],
         edge_index=new_edge_index,
-        mask=final_mask # New batch mask
+        mask=final_mask, # New batch mask
+        ligand_bond_index=remapped_ligand_bond_index,
     )
 
 
@@ -205,5 +215,6 @@ def load_protein_ligand_graph(
         positions=positions,
         edge_index=edge_index,
         mask=ligand_mask,
+        ligand_bond_index=ligand_graph.edge_index,
         cutoff=cutoff,
     )

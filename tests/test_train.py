@@ -12,10 +12,12 @@ from equidock_diff.utils.artifacts import (
 )
 from equidock_diff.train import (
     build_synthetic_graph,
+    ligand_bond_length_loss,
     load_graph_inputs,
     make_model,
     sample_positions,
     training_step,
+    training_step_with_breakdown,
 )
 
 
@@ -92,7 +94,7 @@ def test_training_step_is_finite_for_real_pair_graph(tmp_path: Path) -> None:
     real_args.ligand_path = ligand_path
 
     device = torch.device("cpu")
-    node_features, positions, edge_index = load_graph_inputs(real_args, device)
+    node_features, positions, edge_index, ligand_bond_index = load_graph_inputs(real_args, device)
     model = make_model(real_args, device, node_dim=node_features.shape[1])
 
     loss, beta_t = training_step(
@@ -102,9 +104,11 @@ def test_training_step_is_finite_for_real_pair_graph(tmp_path: Path) -> None:
         edge_index,
         beta_min=0.1,
         beta_max=2.0,
+        ligand_bond_index=ligand_bond_index,
     )
 
     assert node_features.shape[1] == 17
+    assert ligand_bond_index is not None
     assert torch.isfinite(loss)
     assert beta_t > 0.0
 
@@ -134,6 +138,49 @@ def test_sample_positions_stays_finite_with_clipping() -> None:
     assert torch.isfinite(sampled_positions).all()
     assert len(trajectory) == 9
     assert torch.isfinite(trajectory[-1]).all()
+
+
+def test_ligand_bond_length_loss_is_zero_for_matching_bonds() -> None:
+    positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    bond_index = torch.tensor([[0, 1, 1, 0], [1, 0, 0, 1]], dtype=torch.long)
+
+    loss = ligand_bond_length_loss(positions, positions.clone(), bond_index)
+
+    assert loss.item() == pytest.approx(0.0)
+
+
+def test_training_step_with_bond_breakdown_is_finite() -> None:
+    class _SampleArgs(_Args):
+        hidden_dim = 32
+        num_layers = 2
+
+    device = torch.device("cpu")
+    node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
+    model = make_model(_SampleArgs(), device, node_dim=node_features.shape[1])
+    bond_index = torch.tensor([[0, 1, 1, 0], [1, 0, 0, 1]], dtype=torch.long, device=device)
+
+    loss, beta_t, score_loss, bond_loss = training_step_with_breakdown(
+        model,
+        node_features,
+        positions,
+        edge_index,
+        bond_index,
+        beta_min=0.1,
+        beta_max=2.0,
+        ligand_bond_weight=0.5,
+    )
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(score_loss)
+    assert torch.isfinite(bond_loss)
+    assert beta_t > 0.0
 
 
 def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
