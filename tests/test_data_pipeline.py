@@ -38,6 +38,7 @@ def test_build_graph_batch_centers_ligand_and_crops_far_protein() -> None:
     assert torch.allclose(batch.positions[:2].mean(dim=0), torch.zeros(3), atol=1e-6)
     assert batch.node_features[:2, -1].tolist() == [1.0, 1.0]
     assert batch.node_features[2, -1].item() == 0.0
+    assert batch.ligand_bond_index is None
 
 
 def test_build_graph_batch_is_translation_consistent() -> None:
@@ -160,3 +161,6 @@ def test_load_protein_ligand_graph_from_files(tmp_path: Path) -> None:
     assert ligand_count >= 3
     assert batch.node_features[ligand_count:, -1].sum().item() == 0.0
     assert batch.edge_index.shape[1] > 0
+    assert batch.ligand_bond_index is not None
+    assert batch.ligand_bond_index.shape[0] == 2
+    assert torch.all(batch.ligand_bond_index < ligand_count)

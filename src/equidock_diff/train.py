@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden-dim", type=int, default=64, help="Hidden dimension")
     parser.add_argument("--num-layers", type=int, default=3, help="Number of EGNN layers")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="AdamW learning rate")
+    parser.add_argument(
+        "--ligand-bond-weight",
+        type=float,
+        default=0.0,
+        help="Optional weight for ligand bond-length regularization",
+    )
     parser.add_argument("--beta-min", type=float, default=0.1, help="VP-SDE beta minimum")
     parser.add_argument("--beta-max", type=float, default=2.0, help="VP-SDE beta maximum")
     parser.add_argument("--sample-steps", type=int, default=25, help="Reverse diffusion steps")
@@ -193,7 +199,7 @@ def make_model_for_node_dim(
 def load_graph_inputs(
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     has_protein = args.protein_path is not None
     has_ligand = args.ligand_path is not None
     if has_protein != has_ligand:
@@ -210,9 +216,11 @@ def load_graph_inputs(
             batch.node_features.to(device),
             batch.positions.to(device),
             batch.edge_index.to(device),
+            None if batch.ligand_bond_index is None else batch.ligand_bond_index.to(device),
         )
 
-    return build_synthetic_graph(args.num_nodes, args.batch_size, device)
+    node_features, positions, edge_index = build_synthetic_graph(args.num_nodes, args.batch_size, device)
+    return node_features, positions, edge_index, None
 
 
 def training_step(
@@ -222,7 +230,52 @@ def training_step(
     edge_index: torch.Tensor,
     beta_min: float,
     beta_max: float,
+    ligand_bond_index: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, float]:
+    loss, beta_t, _, _ = training_step_with_breakdown(
+        model,
+        node_features,
+        clean_positions,
+        edge_index,
+        ligand_bond_index,
+        beta_min,
+        beta_max,
+        ligand_bond_weight=0.0,
+    )
+    return loss, beta_t
+
+
+def ligand_bond_length_loss(
+    predicted_positions: torch.Tensor,
+    clean_positions: torch.Tensor,
+    ligand_bond_index: torch.Tensor | None,
+) -> torch.Tensor:
+    if ligand_bond_index is None or ligand_bond_index.numel() == 0:
+        return predicted_positions.new_zeros(())
+
+    src, dst = ligand_bond_index
+    keep = src < dst
+    if not keep.any():
+        return predicted_positions.new_zeros(())
+    src = src[keep]
+    dst = dst[keep]
+
+    predicted_lengths = torch.norm(predicted_positions[src] - predicted_positions[dst], dim=-1)
+    clean_lengths = torch.norm(clean_positions[src] - clean_positions[dst], dim=-1)
+    return torch.mean((predicted_lengths - clean_lengths) ** 2)
+
+
+def training_step_with_breakdown(
+    model: nn.Module,
+    node_features: torch.Tensor,
+    clean_positions: torch.Tensor,
+    edge_index: torch.Tensor,
+    ligand_bond_index: torch.Tensor | None,
+    beta_min: float,
+    beta_max: float,
+    *,
+    ligand_bond_weight: float,
+) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor]:
     t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
         0.05, 0.95
     )
@@ -230,8 +283,17 @@ def training_step(
     noised_positions = forward_step(clean_positions, SDEStep(t=t, dt=t), beta_t)
     target_score = clean_positions - noised_positions
     predicted_score = model(node_features, noised_positions, edge_index, t)
-    loss = torch.mean((predicted_score - target_score) ** 2)
-    return loss, float(beta_t.item())
+    score_loss = torch.mean((predicted_score - target_score) ** 2)
+    bond_loss = clean_positions.new_zeros(())
+    if ligand_bond_weight > 0.0:
+        predicted_positions = noised_positions + predicted_score
+        bond_loss = ligand_bond_length_loss(
+            predicted_positions,
+            clean_positions,
+            ligand_bond_index,
+        )
+    total_loss = score_loss + ligand_bond_weight * bond_loss
+    return total_loss, float(beta_t.item()), score_loss, bond_loss
 
 
 def sample_positions(
@@ -274,7 +336,7 @@ def main() -> int:
     args = build_parser().parse_args()
     device = resolve_device(args.device)
     torch.manual_seed(args.seed)
-    node_features, positions, edge_index = load_graph_inputs(args, device)
+    node_features, positions, edge_index, ligand_bond_index = load_graph_inputs(args, device)
     graph_source = "real_pair" if args.protein_path is not None else "synthetic"
 
     if args.dry_run:
@@ -295,13 +357,15 @@ def main() -> int:
     loss_rows: list[tuple[int, float, float]] = []
     for step_idx in range(1, args.steps + 1):
         optimizer.zero_grad(set_to_none=True)
-        loss, beta_t = training_step(
+        loss, beta_t, score_loss, bond_loss = training_step_with_breakdown(
             model,
             node_features,
             positions,
             edge_index,
+            ligand_bond_index,
             args.beta_min,
             args.beta_max,
+            ligand_bond_weight=args.ligand_bond_weight,
         )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -309,7 +373,13 @@ def main() -> int:
         loss_rows.append((step_idx, float(loss.item()), beta_t))
 
         if step_idx == 1 or step_idx == args.steps or step_idx % max(args.steps // 5, 1) == 0:
-            print(f"step={step_idx} loss={loss.item():.6f} beta_t={beta_t:.4f}")
+            line = f"step={step_idx} loss={loss.item():.6f} beta_t={beta_t:.4f}"
+            if args.ligand_bond_weight > 0.0:
+                line += (
+                    f" score_loss={score_loss.item():.6f}"
+                    f" bond_loss={bond_loss.item():.6f}"
+                )
+            print(line)
 
     elapsed = perf_counter() - start
     print(f"training_seconds={elapsed:.3f}")
