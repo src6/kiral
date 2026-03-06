@@ -51,3 +51,33 @@ def batched_centroid(
     weights = mask.unsqueeze(-1).to(pos.dtype)
     denom = weights.sum(dim=-2).clamp_min(1.0)
     return (pos * weights).sum(dim=-2) / denom
+
+
+def kabsch_align(
+    mobile: torch.Tensor,
+    target: torch.Tensor,
+) -> torch.Tensor:
+    if mobile.shape != target.shape or mobile.dim() != 2 or mobile.size(-1) != 3:
+        raise ValueError("mobile and target must both have shape [N, 3].")
+
+    mobile_center = mobile.mean(dim=0, keepdim=True)
+    target_center = target.mean(dim=0, keepdim=True)
+    mobile_centered = mobile - mobile_center
+    target_centered = target - target_center
+
+    covariance = mobile_centered.transpose(0, 1) @ target_centered
+    u, _, vh = torch.linalg.svd(covariance)
+    reflection = torch.sign(torch.linalg.det(u @ vh))
+    correction = torch.diag(
+        torch.tensor([1.0, 1.0, reflection], device=mobile.device, dtype=mobile.dtype)
+    )
+    rotation = u @ correction @ vh
+    return mobile_centered @ rotation + target_center
+
+
+def aligned_rmsd(
+    mobile: torch.Tensor,
+    target: torch.Tensor,
+) -> torch.Tensor:
+    aligned = kabsch_align(mobile, target)
+    return torch.sqrt(torch.mean((aligned - target) ** 2))
