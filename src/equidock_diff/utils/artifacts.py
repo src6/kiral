@@ -90,6 +90,7 @@ def write_experiment_log(
     trajectory_path: Path,
     loss_csv_path: Path,
     plot_path: Path | None,
+    extra_metrics: dict[str, float] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     final_step, final_loss, final_beta = loss_rows[-1]
@@ -115,6 +116,9 @@ def write_experiment_log(
         f"- Sample artifact: `{sample_path}`",
         f"- Trajectory artifact: `{trajectory_path}`",
     ]
+    if extra_metrics is not None:
+        for key, value in extra_metrics.items():
+            lines.append(f"- {key.replace('_', ' ').title()}: `{value:.6f}`")
     if plot_path is not None:
         lines.append(f"- Plot artifact: `{plot_path}`")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

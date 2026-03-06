@@ -211,6 +211,7 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
         trajectory_path=trajectory_path,
         loss_csv_path=loss_csv_path,
         plot_path=plot_path,
+        extra_metrics={"aligned_ligand_rmsd": 1.2345},
     )
 
     contents = log_path.read_text(encoding="utf-8")
@@ -220,6 +221,7 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
     assert "- Node count: `147`" in contents
     assert "- Edge count: `2992`" in contents
     assert "- Final loss: `0.250000` at step `5`" in contents
+    assert "- Aligned Ligand Rmsd: `1.234500`" in contents
     assert str(output_path) in contents
 
 
