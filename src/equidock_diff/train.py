@@ -23,7 +23,7 @@ from equidock_diff.utils.artifacts import (
     write_pdb,
     write_trajectory_pdb,
 )
-from equidock_diff.utils.geometry import random_rotation_matrix
+from equidock_diff.utils.geometry import aligned_rmsd, random_rotation_matrix
 from equidock_diff.utils.plotting import maybe_write_plot
 
 
@@ -414,6 +414,19 @@ def main() -> int:
         print(f"ligand_sample_path={ligand_sample_path}")
     if ligand_trajectory_path is not None:
         print(f"ligand_trajectory_path={ligand_trajectory_path}")
+    extra_metrics: dict[str, float] = {}
+    ligand_mask = node_features[:, -1] > 0.5
+    if graph_source == "real_pair" and bool(ligand_mask.any()):
+        reference_ligand = positions[ligand_mask]
+        sampled_ligand = sampled_positions[ligand_mask]
+        raw_ligand_rmse = torch.sqrt(
+            torch.mean((sampled_ligand - reference_ligand) ** 2)
+        ).item()
+        aligned_ligand = aligned_rmsd(sampled_ligand, reference_ligand).item()
+        extra_metrics["raw_ligand_rmse"] = raw_ligand_rmse
+        extra_metrics["aligned_ligand_rmsd"] = aligned_ligand
+        print(f"raw_ligand_rmse={raw_ligand_rmse:.6f}")
+        print(f"aligned_ligand_rmsd={aligned_ligand:.6f}")
     plot_written = maybe_write_plot(args.plot_output, trajectory, loss_rows)
     if plot_written:
         print(f"plot_path={args.plot_output}")
@@ -434,6 +447,7 @@ def main() -> int:
             trajectory_path=args.trajectory_output,
             loss_csv_path=args.loss_csv,
             plot_path=args.plot_output if plot_written else None,
+            extra_metrics=extra_metrics or None,
         )
         print(f"experiment_log={args.experiment_log}")
     return 0
