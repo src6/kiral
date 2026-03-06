@@ -1,7 +1,12 @@
+import pytest
 import torch
 
 from equidock_diff.models.egnn import EGNNConfig, EGNNScoreNet
-from equidock_diff.utils.geometry import apply_rigid_transform, random_rotation_matrix
+from equidock_diff.utils.geometry import (
+    aligned_rmsd,
+    apply_rigid_transform,
+    random_rotation_matrix,
+)
 
 
 def test_rotation_matrix_shapes() -> None:
@@ -33,3 +38,40 @@ def test_egnn_score_is_rotation_equivariant() -> None:
     expected = apply_rigid_transform(base_score, rotation, torch.zeros(3))
 
     assert torch.allclose(transformed_score, expected, atol=1e-4, rtol=1e-4)
+
+
+def test_aligned_rmsd_is_zero_for_rigidly_transformed_points() -> None:
+    reference = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    rotation = random_rotation_matrix(1, device=torch.device("cpu"), dtype=torch.float32)[0]
+    translation = torch.tensor([1.5, -0.25, 0.5], dtype=torch.float32)
+    transformed = apply_rigid_transform(reference, rotation, translation)
+
+    rmsd = aligned_rmsd(transformed, reference)
+
+    assert rmsd.item() == pytest.approx(0.0, abs=1e-5)
+
+
+def test_aligned_rmsd_detects_non_rigid_distortion() -> None:
+    reference = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    distorted = reference.clone()
+    distorted[1, 0] = 1.3
+
+    rmsd = aligned_rmsd(distorted, reference)
+
+    assert rmsd.item() > 0.0
