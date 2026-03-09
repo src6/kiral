@@ -5,6 +5,11 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+EDGE_TYPE_LIGAND_LIGAND = 0
+EDGE_TYPE_PROTEIN_PROTEIN = 1
+EDGE_TYPE_LIGAND_PROTEIN = 2
+NUM_EDGE_TYPES = 3
+
 
 @dataclass(frozen=True)
 class EGNNConfig:
@@ -12,6 +17,38 @@ class EGNNConfig:
     hidden_dim: int
     num_layers: int
     time_dim: int = 32
+    use_hetero_edges: bool = False
+
+
+def infer_ligand_mask(node_features: torch.Tensor) -> torch.Tensor:
+    if node_features.dim() != 2:
+        raise ValueError("node_features must have shape [N, F].")
+
+    if node_features.size(-1) >= 2:
+        first = node_features[:, 0]
+        second = node_features[:, 1]
+        first_binary = torch.all((first == 0.0) | (first == 1.0))
+        second_binary = torch.all((second == 0.0) | (second == 1.0))
+        if bool(first_binary and second_binary and torch.allclose(first + second, torch.ones_like(first))):
+            return first > 0.5
+
+    if node_features.size(-1) >= 1:
+        indicator = node_features[:, -1]
+        if bool(torch.all((indicator == 0.0) | (indicator == 1.0))):
+            return indicator > 0.5
+
+    return torch.zeros(node_features.size(0), device=node_features.device, dtype=torch.bool)
+
+
+def infer_edge_types(edge_index: torch.Tensor, ligand_mask: torch.Tensor) -> torch.Tensor:
+    src, dst = edge_index
+    src_is_ligand = ligand_mask[src]
+    dst_is_ligand = ligand_mask[dst]
+
+    edge_types = torch.full_like(src, EDGE_TYPE_LIGAND_PROTEIN)
+    edge_types[src_is_ligand & dst_is_ligand] = EDGE_TYPE_LIGAND_LIGAND
+    edge_types[~src_is_ligand & ~dst_is_ligand] = EDGE_TYPE_PROTEIN_PROTEIN
+    return edge_types
 
 
 class EGNNLayer(nn.Module):
@@ -26,6 +63,15 @@ class EGNNLayer(nn.Module):
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.SiLU(),
         )
+        if config.use_hetero_edges:
+            self.message_transforms = nn.ModuleList(
+                [nn.Linear(config.hidden_dim, config.hidden_dim) for _ in range(NUM_EDGE_TYPES)]
+            )
+            for transform in self.message_transforms:
+                nn.init.eye_(transform.weight)
+                nn.init.zeros_(transform.bias)
+        else:
+            self.message_transforms = None
         self.coord_mlp = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.SiLU(),
@@ -42,13 +88,23 @@ class EGNNLayer(nn.Module):
         node_states: torch.Tensor,
         positions: torch.Tensor,
         edge_index: torch.Tensor,
+        edge_types: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         src, dst = edge_index
         diff = positions[src] - positions[dst]
         radial = diff.pow(2).sum(dim=-1, keepdim=True)
 
         edge_inputs = torch.cat([node_states[src], node_states[dst], radial], dim=-1)
-        messages = self.edge_mlp(edge_inputs)
+        base_messages = self.edge_mlp(edge_inputs)
+        if self.message_transforms is None:
+            messages = base_messages
+        else:
+            messages = torch.zeros_like(base_messages)
+            for edge_type in range(NUM_EDGE_TYPES):
+                edge_mask = edge_types == edge_type
+                if not bool(edge_mask.any()):
+                    continue
+                messages[edge_mask] = self.message_transforms[edge_type](base_messages[edge_mask])
 
         num_nodes = node_states.size(0)
         aggregated = torch.zeros_like(node_states)
@@ -113,9 +169,23 @@ class EGNNScoreNet(nn.Module):
         node_states = node_states + self.time_embed(time.unsqueeze(-1))
 
         centered_positions = positions - positions.mean(dim=0, keepdim=True)
+        if self.config.use_hetero_edges:
+            ligand_mask = infer_ligand_mask(node_features)
+            edge_types = infer_edge_types(edge_index, ligand_mask)
+        else:
+            edge_types = torch.zeros(
+                edge_index.size(1),
+                device=edge_index.device,
+                dtype=edge_index.dtype,
+            )
         hidden_positions = centered_positions
         for layer in self.layers:
-            node_states, hidden_positions = layer(node_states, hidden_positions, edge_index)
+            node_states, hidden_positions = layer(
+                node_states,
+                hidden_positions,
+                edge_index,
+                edge_types,
+            )
 
         score_scale = self.score_head(node_states)
         score = centered_positions * score_scale + (hidden_positions - centered_positions)
