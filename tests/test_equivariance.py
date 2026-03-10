@@ -85,6 +85,44 @@ def test_egnn_score_is_rotation_equivariant_with_hetero_edges() -> None:
     assert torch.allclose(transformed_score, expected, atol=1e-4, rtol=1e-4)
 
 
+def test_egnn_score_is_rotation_equivariant_with_ligand_global_node() -> None:
+    torch.manual_seed(0)
+    model = EGNNScoreNet(
+        EGNNConfig(
+            node_dim=4,
+            hidden_dim=32,
+            num_layers=2,
+            use_ligand_global_node=True,
+        )
+    )
+    node_features = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    positions = torch.randn(6, 3)
+    edge_index = torch.tensor(
+        [[0, 1, 2, 3, 4, 5, 1, 2, 3, 4], [1, 2, 3, 4, 5, 0, 0, 1, 2, 3]],
+        dtype=torch.long,
+    )
+    time = torch.tensor(0.3)
+
+    base_score = model(node_features, positions, edge_index, time)
+    rotation = random_rotation_matrix(1, device=torch.device("cpu"), dtype=torch.float32)[0]
+    translation = torch.randn(3)
+    transformed_positions = apply_rigid_transform(positions, rotation, translation)
+    transformed_score = model(node_features, transformed_positions, edge_index, time)
+    expected = apply_rigid_transform(base_score, rotation, torch.zeros(3))
+
+    assert torch.allclose(transformed_score, expected, atol=1e-4, rtol=1e-4)
+
+
 def test_aligned_rmsd_is_zero_for_rigidly_transformed_points() -> None:
     reference = torch.tensor(
         [
