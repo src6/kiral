@@ -18,6 +18,7 @@ class EGNNConfig:
     num_layers: int
     time_dim: int = 32
     use_hetero_edges: bool = False
+    use_ligand_global_node: bool = False
 
 
 def infer_ligand_mask(node_features: torch.Tensor) -> torch.Tensor:
@@ -72,6 +73,14 @@ class EGNNLayer(nn.Module):
                 nn.init.zeros_(transform.bias)
         else:
             self.message_transforms = None
+        if config.use_ligand_global_node:
+            self.ligand_global_mlp = nn.Sequential(
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+                nn.SiLU(),
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+            )
+        else:
+            self.ligand_global_mlp = None
         self.coord_mlp = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.SiLU(),
@@ -89,6 +98,7 @@ class EGNNLayer(nn.Module):
         positions: torch.Tensor,
         edge_index: torch.Tensor,
         edge_types: torch.Tensor,
+        ligand_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         src, dst = edge_index
         diff = positions[src] - positions[dst]
@@ -109,6 +119,14 @@ class EGNNLayer(nn.Module):
         num_nodes = node_states.size(0)
         aggregated = torch.zeros_like(node_states)
         aggregated.index_add_(0, dst, messages)
+        if self.ligand_global_mlp is not None and ligand_mask is not None and bool(ligand_mask.any()):
+            ligand_context = node_states[ligand_mask].mean(dim=0, keepdim=True)
+            ligand_context = self.ligand_global_mlp(ligand_context)
+            aggregated = aggregated.clone()
+            aggregated[ligand_mask] = aggregated[ligand_mask] + ligand_context.expand(
+                int(ligand_mask.sum().item()),
+                -1,
+            )
 
         coord_weights = self.coord_mlp(messages)
         coord_messages = diff * coord_weights
@@ -169,8 +187,10 @@ class EGNNScoreNet(nn.Module):
         node_states = node_states + self.time_embed(time.unsqueeze(-1))
 
         centered_positions = positions - positions.mean(dim=0, keepdim=True)
-        if self.config.use_hetero_edges:
+        ligand_mask = None
+        if self.config.use_hetero_edges or self.config.use_ligand_global_node:
             ligand_mask = infer_ligand_mask(node_features)
+        if self.config.use_hetero_edges:
             edge_types = infer_edge_types(edge_index, ligand_mask)
         else:
             edge_types = torch.zeros(
@@ -185,6 +205,7 @@ class EGNNScoreNet(nn.Module):
                 hidden_positions,
                 edge_index,
                 edge_types,
+                ligand_mask,
             )
 
         score_scale = self.score_head(node_states)

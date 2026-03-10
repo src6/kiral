@@ -25,6 +25,7 @@ class _Args:
     hidden_dim = 32
     num_layers = 2
     hetero_edges = False
+    ligand_global_node = False
 
 
 def test_training_step_is_finite() -> None:
@@ -51,6 +52,27 @@ def test_training_step_is_finite_with_hetero_edges() -> None:
 
     device = torch.device("cpu")
     model = make_model(_HeteroArgs(), device)
+    node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
+
+    loss, beta_t = training_step(
+        model,
+        node_features,
+        positions,
+        edge_index,
+        beta_min=0.1,
+        beta_max=2.0,
+    )
+
+    assert torch.isfinite(loss)
+    assert beta_t > 0.0
+
+
+def test_training_step_is_finite_with_ligand_global_node() -> None:
+    class _GlobalArgs(_Args):
+        ligand_global_node = True
+
+    device = torch.device("cpu")
+    model = make_model(_GlobalArgs(), device)
     node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
 
     loss, beta_t = training_step(

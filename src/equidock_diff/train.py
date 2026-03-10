@@ -62,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden-dim", type=int, default=64, help="Hidden dimension")
     parser.add_argument("--num-layers", type=int, default=3, help="Number of EGNN layers")
     parser.add_argument(
+        "--ligand-global-node",
+        action="store_true",
+        help="Add a ligand-wide context update inside each EGNN layer",
+    )
+    parser.add_argument(
         "--hetero-edges",
         action="store_true",
         help="Use typed ligand/protein message transforms in the EGNN backbone",
@@ -196,6 +201,7 @@ def make_model_for_node_dim(
                 hidden_dim=args.hidden_dim,
                 num_layers=args.num_layers,
                 use_hetero_edges=args.hetero_edges,
+                use_ligand_global_node=args.ligand_global_node,
             )
         )
     )
