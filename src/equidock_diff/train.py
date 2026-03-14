@@ -67,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Add a ligand-wide context update inside each EGNN layer",
     )
     parser.add_argument(
+        "--complete-frame",
+        action="store_true",
+        help="Use a three-vector coordinate basis in EGNN updates",
+    )
+    parser.add_argument(
         "--hetero-edges",
         action="store_true",
         help="Use typed ligand/protein message transforms in the EGNN backbone",
@@ -202,6 +207,7 @@ def make_model_for_node_dim(
                 num_layers=args.num_layers,
                 use_hetero_edges=args.hetero_edges,
                 use_ligand_global_node=args.ligand_global_node,
+                use_complete_frame=args.complete_frame,
             )
         )
     )

@@ -19,6 +19,7 @@ class EGNNConfig:
     time_dim: int = 32
     use_hetero_edges: bool = False
     use_ligand_global_node: bool = False
+    use_complete_frame: bool = False
 
 
 def infer_ligand_mask(node_features: torch.Tensor) -> torch.Tensor:
@@ -52,6 +53,23 @@ def infer_edge_types(edge_index: torch.Tensor, ligand_mask: torch.Tensor) -> tor
     return edge_types
 
 
+def _safe_unit(vector: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    norm = torch.linalg.norm(vector, dim=-1, keepdim=True)
+    safe_norm = torch.clamp_min(norm, eps)
+    unit = vector / safe_norm
+    return torch.where(norm > eps, unit, torch.zeros_like(unit))
+
+
+def complete_frame_basis(
+    src_positions: torch.Tensor,
+    dst_positions: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    radial = _safe_unit(src_positions - dst_positions)
+    pseudo = _safe_unit(torch.cross(src_positions, dst_positions, dim=-1))
+    orthogonal = _safe_unit(torch.cross(radial, pseudo, dim=-1))
+    return radial, pseudo, orthogonal
+
+
 class EGNNLayer(nn.Module):
     """Minimal EGNN-style message passing block."""
 
@@ -81,10 +99,11 @@ class EGNNLayer(nn.Module):
             )
         else:
             self.ligand_global_mlp = None
+        coord_out_dim = 3 if config.use_complete_frame else 1
         self.coord_mlp = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.SiLU(),
-            nn.Linear(config.hidden_dim, 1),
+            nn.Linear(config.hidden_dim, coord_out_dim),
         )
         self.node_mlp = nn.Sequential(
             nn.Linear(2 * config.hidden_dim, config.hidden_dim),
@@ -129,7 +148,18 @@ class EGNNLayer(nn.Module):
             )
 
         coord_weights = self.coord_mlp(messages)
-        coord_messages = diff * coord_weights
+        if self.config.use_complete_frame:
+            radial_basis, pseudo_basis, orthogonal_basis = complete_frame_basis(
+                positions[src],
+                positions[dst],
+            )
+            coord_messages = (
+                radial_basis * coord_weights[:, 0:1]
+                + pseudo_basis * coord_weights[:, 1:2]
+                + orthogonal_basis * coord_weights[:, 2:3]
+            )
+        else:
+            coord_messages = diff * coord_weights
         coord_updates = torch.zeros_like(positions)
         coord_updates.index_add_(0, dst, coord_messages)
 
