@@ -27,6 +27,7 @@ class _Args:
     hetero_edges = False
     ligand_global_node = False
     complete_frame = False
+    hetgnn_backbone = False
 
 
 def test_training_step_is_finite() -> None:
@@ -95,6 +96,27 @@ def test_training_step_is_finite_with_complete_frame() -> None:
 
     device = torch.device("cpu")
     model = make_model(_CompleteFrameArgs(), device)
+    node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
+
+    loss, beta_t = training_step(
+        model,
+        node_features,
+        positions,
+        edge_index,
+        beta_min=0.1,
+        beta_max=2.0,
+    )
+
+    assert torch.isfinite(loss)
+    assert beta_t > 0.0
+
+
+def test_training_step_is_finite_with_hetgnn_backbone() -> None:
+    class _HetGNNArgs(_Args):
+        hetgnn_backbone = True
+
+    device = torch.device("cpu")
+    model = make_model(_HetGNNArgs(), device)
     node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
 
     loss, beta_t = training_step(
@@ -206,6 +228,34 @@ def test_sample_positions_stays_finite_with_clipping() -> None:
     assert torch.isfinite(trajectory[-1]).all()
 
 
+def test_sample_positions_keeps_protein_anchor_with_hetgnn_backbone() -> None:
+    class _HetGNNArgs(_Args):
+        hetgnn_backbone = True
+
+    device = torch.device("cpu")
+    node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
+    model = make_model(_HetGNNArgs(), device, node_dim=node_features.shape[1])
+
+    sampled_positions, trajectory = sample_positions(
+        model,
+        node_features,
+        edge_index,
+        positions.size(0),
+        device,
+        sample_steps=4,
+        beta_min=0.1,
+        beta_max=2.0,
+        score_clip=10.0,
+        position_clip=50.0,
+        reference_positions=positions,
+        anchor_protein=True,
+    )
+
+    protein_mask = node_features[:, 1] > 0.5
+    assert torch.allclose(sampled_positions[protein_mask], positions[protein_mask])
+    assert torch.allclose(trajectory[-1][protein_mask], positions[protein_mask].cpu())
+
+
 def test_ligand_bond_length_loss_is_zero_for_matching_bonds() -> None:
     positions = torch.tensor(
         [
@@ -241,6 +291,7 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
         beta_min=0.1,
         beta_max=2.0,
         ligand_bond_weight=0.5,
+        hetgnn_backbone=False,
     )
 
     assert torch.isfinite(loss)
