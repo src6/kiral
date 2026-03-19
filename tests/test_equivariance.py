@@ -9,6 +9,7 @@ from equidock_diff.models.egnn import (
     complete_frame_basis,
     infer_edge_types,
     infer_ligand_mask,
+    scalarize_local_frame,
 )
 from equidock_diff.utils.geometry import (
     aligned_rmsd,
@@ -152,6 +153,44 @@ def test_egnn_score_is_rotation_equivariant_with_complete_frame() -> None:
     assert torch.allclose(transformed_score, expected, atol=1e-4, rtol=1e-4)
 
 
+def test_egnn_score_is_rotation_equivariant_with_hetgnn_backbone() -> None:
+    torch.manual_seed(0)
+    model = EGNNScoreNet(
+        EGNNConfig(
+            node_dim=4,
+            hidden_dim=32,
+            num_layers=2,
+            use_hetgnn_backbone=True,
+        )
+    )
+    node_features = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    positions = torch.randn(6, 3)
+    edge_index = torch.tensor(
+        [[0, 1, 2, 3, 4, 5, 1, 2, 3, 4], [1, 2, 3, 4, 5, 0, 0, 1, 2, 3]],
+        dtype=torch.long,
+    )
+    time = torch.tensor(0.3)
+
+    base_score = model(node_features, positions, edge_index, time)
+    rotation = random_rotation_matrix(1, device=torch.device("cpu"), dtype=torch.float32)[0]
+    translation = torch.randn(3)
+    transformed_positions = apply_rigid_transform(positions, rotation, translation)
+    transformed_score = model(node_features, transformed_positions, edge_index, time)
+    expected = apply_rigid_transform(base_score, rotation, torch.zeros(3))
+
+    assert torch.allclose(transformed_score, expected, atol=1e-4, rtol=1e-4)
+
+
 def test_aligned_rmsd_is_zero_for_rigidly_transformed_points() -> None:
     reference = torch.tensor(
         [
@@ -236,3 +275,44 @@ def test_complete_frame_basis_stays_finite_when_cross_product_degenerates() -> N
     assert torch.isfinite(radial).all()
     assert torch.isfinite(pseudo).all()
     assert torch.isfinite(orthogonal).all()
+
+
+def test_scalarize_local_frame_returns_finite_invariants() -> None:
+    src_positions = torch.tensor([[1.0, 0.0, 0.0], [0.5, 0.5, 0.5]], dtype=torch.float32)
+    dst_positions = torch.tensor([[2.0, 0.0, 0.0], [0.1, 0.2, 0.3]], dtype=torch.float32)
+
+    scalars = scalarize_local_frame(src_positions, dst_positions)
+
+    assert scalars.shape == (2, 4)
+    assert torch.isfinite(scalars).all()
+
+
+def test_hetgnn_backbone_keeps_protein_scores_zero() -> None:
+    torch.manual_seed(0)
+    model = EGNNScoreNet(
+        EGNNConfig(
+            node_dim=4,
+            hidden_dim=32,
+            num_layers=2,
+            use_hetgnn_backbone=True,
+        )
+    )
+    node_features = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    positions = torch.randn(4, 3)
+    edge_index = torch.tensor(
+        [[0, 1, 2, 3, 0, 1], [1, 0, 3, 2, 2, 3]],
+        dtype=torch.long,
+    )
+
+    score = model(node_features, positions, edge_index, torch.tensor(0.4))
+
+    protein_mask = node_features[:, 1] > 0.5
+    assert torch.allclose(score[protein_mask], torch.zeros_like(score[protein_mask]), atol=1e-6)

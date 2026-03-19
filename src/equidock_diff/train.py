@@ -14,8 +14,8 @@ from torch import nn
 from equidock_diff.data.pipeline import load_protein_ligand_graph
 from equidock_diff.diffusion.schedules import linear_beta
 from equidock_diff.diffusion.sde import SDEStep, forward_step, reverse_step
+from equidock_diff.models.egnn import EGNNConfig, infer_ligand_mask
 from equidock_diff.models.score_net import ScoreNet, ScoreNetConfig
-from equidock_diff.models.egnn import EGNNConfig
 from equidock_diff.utils.artifacts import (
     write_experiment_log,
     write_ligand_artifacts,
@@ -75,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--hetero-edges",
         action="store_true",
         help="Use typed ligand/protein message transforms in the EGNN backbone",
+    )
+    parser.add_argument(
+        "--hetgnn-backbone",
+        action="store_true",
+        help="Use the ClofNet-inspired heterogeneous frame backbone",
     )
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="AdamW learning rate")
     parser.add_argument(
@@ -208,6 +213,7 @@ def make_model_for_node_dim(
                 use_hetero_edges=args.hetero_edges,
                 use_ligand_global_node=args.ligand_global_node,
                 use_complete_frame=args.complete_frame,
+                use_hetgnn_backbone=args.hetgnn_backbone,
             )
         )
     )
@@ -250,6 +256,11 @@ def training_step(
     beta_max: float,
     ligand_bond_index: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, float]:
+    hetgnn_backbone = False
+    model_config = getattr(model, "config", None)
+    egnn_config = getattr(model_config, "egnn", None)
+    if egnn_config is not None:
+        hetgnn_backbone = bool(getattr(egnn_config, "use_hetgnn_backbone", False))
     loss, beta_t, _, _ = training_step_with_breakdown(
         model,
         node_features,
@@ -259,6 +270,7 @@ def training_step(
         beta_min,
         beta_max,
         ligand_bond_weight=0.0,
+        hetgnn_backbone=hetgnn_backbone,
     )
     return loss, beta_t
 
@@ -293,15 +305,33 @@ def training_step_with_breakdown(
     beta_max: float,
     *,
     ligand_bond_weight: float,
+    hetgnn_backbone: bool,
 ) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor]:
     t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
         0.05, 0.95
     )
     beta_t = linear_beta(t, beta_min, beta_max)
-    noised_positions = forward_step(clean_positions, SDEStep(t=t, dt=t), beta_t)
-    target_score = clean_positions - noised_positions
+    if hetgnn_backbone:
+        ligand_mask = infer_ligand_mask(node_features)
+        noised_positions = clean_positions.clone()
+        noised_positions[ligand_mask] = forward_step(
+            clean_positions[ligand_mask],
+            SDEStep(t=t, dt=t),
+            beta_t,
+        )
+        target_score = torch.zeros_like(clean_positions)
+        target_score[ligand_mask] = clean_positions[ligand_mask] - noised_positions[ligand_mask]
+    else:
+        ligand_mask = None
+        noised_positions = forward_step(clean_positions, SDEStep(t=t, dt=t), beta_t)
+        target_score = clean_positions - noised_positions
     predicted_score = model(node_features, noised_positions, edge_index, t)
-    score_loss = torch.mean((predicted_score - target_score) ** 2)
+    if hetgnn_backbone and ligand_mask is not None and bool(ligand_mask.any()):
+        predicted_score = predicted_score.clone()
+        predicted_score[~ligand_mask] = 0.0
+        score_loss = torch.mean((predicted_score[ligand_mask] - target_score[ligand_mask]) ** 2)
+    else:
+        score_loss = torch.mean((predicted_score - target_score) ** 2)
     bond_loss = clean_positions.new_zeros(())
     if ligand_bond_weight > 0.0:
         predicted_positions = noised_positions + predicted_score
@@ -325,8 +355,19 @@ def sample_positions(
     beta_max: float,
     score_clip: float,
     position_clip: float,
+    *,
+    reference_positions: torch.Tensor | None = None,
+    anchor_protein: bool = False,
 ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-    positions = torch.randn(num_nodes, 3, device=device, dtype=torch.float32)
+    ligand_mask = infer_ligand_mask(node_features) if anchor_protein else None
+    if anchor_protein:
+        if reference_positions is None:
+            raise ValueError("reference_positions are required when anchor_protein is enabled.")
+        positions = reference_positions.clone()
+        assert ligand_mask is not None
+        positions[ligand_mask] = torch.randn_like(positions[ligand_mask])
+    else:
+        positions = torch.randn(num_nodes, 3, device=device, dtype=torch.float32)
     trajectory = [positions.detach().cpu().clone()]
     dt = torch.tensor(1.0 / sample_steps, device=device, dtype=torch.float32)
     for step_idx in reversed(range(sample_steps)):
@@ -335,16 +376,31 @@ def sample_positions(
         )
         beta_t = linear_beta(t, beta_min, beta_max)
         score = model(node_features, positions, edge_index, t)
+        if anchor_protein and ligand_mask is not None:
+            score = score.clone()
+            score[~ligand_mask] = 0.0
         score = torch.nan_to_num(score, nan=0.0, posinf=score_clip, neginf=-score_clip)
         score = score.clamp(-score_clip, score_clip)
-        positions = reverse_step(positions, SDEStep(t=t, dt=dt), score, beta_t)
+        positions = reverse_step(
+            positions,
+            SDEStep(t=t, dt=dt),
+            score,
+            beta_t,
+            max_score_norm=score_clip,
+        )
         positions = torch.nan_to_num(
             positions,
             nan=0.0,
             posinf=position_clip,
             neginf=-position_clip,
         )
-        positions = positions - positions.mean(dim=0, keepdim=True)
+        if anchor_protein:
+            assert reference_positions is not None
+            assert ligand_mask is not None
+            positions = positions.clone()
+            positions[~ligand_mask] = reference_positions[~ligand_mask]
+        else:
+            positions = positions - positions.mean(dim=0, keepdim=True)
         positions = positions.clamp(-position_clip, position_clip)
         trajectory.append(positions.detach().cpu().clone())
     return positions, trajectory
@@ -384,6 +440,7 @@ def main() -> int:
             args.beta_min,
             args.beta_max,
             ligand_bond_weight=args.ligand_bond_weight,
+            hetgnn_backbone=args.hetgnn_backbone,
         )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -416,6 +473,8 @@ def main() -> int:
             args.beta_max,
             args.sample_score_clip,
             args.sample_position_clip,
+            reference_positions=positions,
+            anchor_protein=args.hetgnn_backbone,
         )
     write_pdb(args.output, sampled_positions)
     write_trajectory_pdb(args.trajectory_output, trajectory)
