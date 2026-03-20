@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import shlex
 import sys
+from argparse import SUPPRESS
 from pathlib import Path
 from time import perf_counter
 
@@ -77,9 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use typed ligand/protein message transforms in the EGNN backbone",
     )
     parser.add_argument(
-        "--hetgnn-backbone",
+        "--frame-hetero-backbone",
         action="store_true",
-        help="Use the ClofNet-inspired heterogeneous frame backbone",
+        help="Use the heterogeneous frame-based SE(3)-equivariant backbone",
+    )
+    parser.add_argument(
+        "--hetgnn-backbone",
+        dest="frame_hetero_backbone",
+        action="store_true",
+        help=SUPPRESS,
     )
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="AdamW learning rate")
     parser.add_argument(
@@ -213,7 +220,7 @@ def make_model_for_node_dim(
                 use_hetero_edges=args.hetero_edges,
                 use_ligand_global_node=args.ligand_global_node,
                 use_complete_frame=args.complete_frame,
-                use_hetgnn_backbone=args.hetgnn_backbone,
+                use_frame_hetero_backbone=args.frame_hetero_backbone,
             )
         )
     )
@@ -256,11 +263,11 @@ def training_step(
     beta_max: float,
     ligand_bond_index: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, float]:
-    hetgnn_backbone = False
+    frame_hetero_backbone = False
     model_config = getattr(model, "config", None)
     egnn_config = getattr(model_config, "egnn", None)
     if egnn_config is not None:
-        hetgnn_backbone = bool(getattr(egnn_config, "use_hetgnn_backbone", False))
+        frame_hetero_backbone = bool(getattr(egnn_config, "use_frame_hetero_backbone", False))
     loss, beta_t, _, _ = training_step_with_breakdown(
         model,
         node_features,
@@ -270,7 +277,7 @@ def training_step(
         beta_min,
         beta_max,
         ligand_bond_weight=0.0,
-        hetgnn_backbone=hetgnn_backbone,
+        frame_hetero_backbone=frame_hetero_backbone,
     )
     return loss, beta_t
 
@@ -305,13 +312,13 @@ def training_step_with_breakdown(
     beta_max: float,
     *,
     ligand_bond_weight: float,
-    hetgnn_backbone: bool,
+    frame_hetero_backbone: bool,
 ) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor]:
     t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
         0.05, 0.95
     )
     beta_t = linear_beta(t, beta_min, beta_max)
-    if hetgnn_backbone:
+    if frame_hetero_backbone:
         ligand_mask = infer_ligand_mask(node_features)
         noised_positions = clean_positions.clone()
         noised_positions[ligand_mask] = forward_step(
@@ -326,7 +333,7 @@ def training_step_with_breakdown(
         noised_positions = forward_step(clean_positions, SDEStep(t=t, dt=t), beta_t)
         target_score = clean_positions - noised_positions
     predicted_score = model(node_features, noised_positions, edge_index, t)
-    if hetgnn_backbone and ligand_mask is not None and bool(ligand_mask.any()):
+    if frame_hetero_backbone and ligand_mask is not None and bool(ligand_mask.any()):
         predicted_score = predicted_score.clone()
         predicted_score[~ligand_mask] = 0.0
         score_loss = torch.mean((predicted_score[ligand_mask] - target_score[ligand_mask]) ** 2)
@@ -440,7 +447,7 @@ def main() -> int:
             args.beta_min,
             args.beta_max,
             ligand_bond_weight=args.ligand_bond_weight,
-            hetgnn_backbone=args.hetgnn_backbone,
+            frame_hetero_backbone=args.frame_hetero_backbone,
         )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -474,7 +481,7 @@ def main() -> int:
             args.sample_score_clip,
             args.sample_position_clip,
             reference_positions=positions,
-            anchor_protein=args.hetgnn_backbone,
+            anchor_protein=args.frame_hetero_backbone,
         )
     write_pdb(args.output, sampled_positions)
     write_trajectory_pdb(args.trajectory_output, trajectory)
