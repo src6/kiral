@@ -1,7 +1,7 @@
 [project]
 name = "equidock-diff"
 version = "0.1.0"
-description = "Add your description here"
+description = "SE(3)-equivariant diffusion prototype for protein-ligand docking"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
