@@ -153,14 +153,14 @@ def test_egnn_score_is_rotation_equivariant_with_complete_frame() -> None:
     assert torch.allclose(transformed_score, expected, atol=1e-4, rtol=1e-4)
 
 
-def test_egnn_score_is_rotation_equivariant_with_hetgnn_backbone() -> None:
+def test_egnn_score_is_rotation_equivariant_with_frame_hetero_backbone() -> None:
     torch.manual_seed(0)
     model = EGNNScoreNet(
         EGNNConfig(
             node_dim=4,
             hidden_dim=32,
             num_layers=2,
-            use_hetgnn_backbone=True,
+            use_frame_hetero_backbone=True,
         )
     )
     node_features = torch.tensor(
@@ -286,15 +286,14 @@ def test_scalarize_local_frame_returns_finite_invariants() -> None:
     assert scalars.shape == (2, 4)
     assert torch.isfinite(scalars).all()
 
-
-def test_hetgnn_backbone_keeps_protein_scores_zero() -> None:
+def test_frame_hetero_backbone_keeps_protein_scores_zero() -> None:
     torch.manual_seed(0)
     model = EGNNScoreNet(
         EGNNConfig(
             node_dim=4,
             hidden_dim=32,
             num_layers=2,
-            use_hetgnn_backbone=True,
+            use_frame_hetero_backbone=True,
         )
     )
     node_features = torch.tensor(

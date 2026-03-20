@@ -20,7 +20,7 @@ class EGNNConfig:
     use_hetero_edges: bool = False
     use_ligand_global_node: bool = False
     use_complete_frame: bool = False
-    use_hetgnn_backbone: bool = False
+    use_frame_hetero_backbone: bool = False
 
 
 def infer_ligand_mask(node_features: torch.Tensor) -> torch.Tensor:
@@ -95,7 +95,7 @@ class EGNNLayer(nn.Module):
     def __init__(self, config: EGNNConfig) -> None:
         super().__init__()
         self.config = config
-        if config.use_hetgnn_backbone:
+        if config.use_frame_hetero_backbone:
             self.edge_mlps = nn.ModuleList(
                 [
                     nn.Sequential(
@@ -146,7 +146,7 @@ class EGNNLayer(nn.Module):
             self.ligand_global_mlp = None
         coord_out_dim = 3 if config.use_complete_frame else 1
         self.coord_mlp = None
-        if not config.use_hetgnn_backbone:
+        if not config.use_frame_hetero_backbone:
             self.coord_mlp = nn.Sequential(
                 nn.Linear(config.hidden_dim, config.hidden_dim),
                 nn.SiLU(),
@@ -168,7 +168,7 @@ class EGNNLayer(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         src, dst = edge_index
         diff = positions[src] - positions[dst]
-        if self.config.use_hetgnn_backbone:
+        if self.config.use_frame_hetero_backbone:
             scalar_features = scalarize_local_frame(positions[src], positions[dst])
             messages = torch.zeros_like(node_states[src])
             assert self.edge_mlps is not None
@@ -208,7 +208,7 @@ class EGNNLayer(nn.Module):
                 -1,
             )
 
-        if self.config.use_hetgnn_backbone:
+        if self.config.use_frame_hetero_backbone:
             radial_basis, pseudo_basis, orthogonal_basis = complete_frame_basis(
                 positions[src],
                 positions[dst],
@@ -270,14 +270,14 @@ class EGNNScoreNet(nn.Module):
         self.layers = nn.ModuleList(
             EGNNLayer(config) for _ in range(max(config.num_layers, 1))
         )
-        if config.use_hetgnn_backbone:
-            self.hetgnn_global_head = nn.Sequential(
+        if config.use_frame_hetero_backbone:
+            self.frame_hetero_global_head = nn.Sequential(
                 nn.Linear(2 * config.hidden_dim, config.hidden_dim),
                 nn.SiLU(),
                 nn.Linear(config.hidden_dim, 2),
             )
         else:
-            self.hetgnn_global_head = None
+            self.frame_hetero_global_head = None
         self.score_head = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.SiLU(),
@@ -312,10 +312,10 @@ class EGNNScoreNet(nn.Module):
         if (
             self.config.use_hetero_edges
             or self.config.use_ligand_global_node
-            or self.config.use_hetgnn_backbone
+            or self.config.use_frame_hetero_backbone
         ):
             ligand_mask = infer_ligand_mask(node_features)
-        if self.config.use_hetero_edges or self.config.use_hetgnn_backbone:
+        if self.config.use_hetero_edges or self.config.use_frame_hetero_backbone:
             edge_types = infer_edge_types(edge_index, ligand_mask)
         else:
             edge_types = torch.zeros(
@@ -336,16 +336,16 @@ class EGNNScoreNet(nn.Module):
         score_scale = self.score_head(node_states)
         score = centered_positions * score_scale + (hidden_positions - centered_positions)
         if (
-            self.config.use_hetgnn_backbone
+            self.config.use_frame_hetero_backbone
             and ligand_mask is not None
             and bool(ligand_mask.any())
-            and self.hetgnn_global_head is not None
+            and self.frame_hetero_global_head is not None
         ):
             ligand_states = node_states[ligand_mask]
             ligand_positions = hidden_positions[ligand_mask]
             ligand_centroid = ligand_positions.mean(dim=0, keepdim=True)
             ligand_context = ligand_states.mean(dim=0, keepdim=True).expand_as(ligand_states)
-            rigid_weights = self.hetgnn_global_head(torch.cat([ligand_states, ligand_context], dim=-1))
+            rigid_weights = self.frame_hetero_global_head(torch.cat([ligand_states, ligand_context], dim=-1))
             ligand_offsets = ligand_positions - ligand_centroid
             delta_translation = torch.mean(rigid_weights[:, 0:1] * ligand_offsets, dim=0, keepdim=True)
             delta_rotation = torch.mean(rigid_weights[:, 1:2] * ligand_offsets, dim=0, keepdim=True)

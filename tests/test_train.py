@@ -27,7 +27,7 @@ class _Args:
     hetero_edges = False
     ligand_global_node = False
     complete_frame = False
-    hetgnn_backbone = False
+    frame_hetero_backbone = False
 
 
 def test_training_step_is_finite() -> None:
@@ -111,12 +111,12 @@ def test_training_step_is_finite_with_complete_frame() -> None:
     assert beta_t > 0.0
 
 
-def test_training_step_is_finite_with_hetgnn_backbone() -> None:
-    class _HetGNNArgs(_Args):
-        hetgnn_backbone = True
+def test_training_step_is_finite_with_frame_hetero_backbone() -> None:
+    class _FrameHeteroArgs(_Args):
+        frame_hetero_backbone = True
 
     device = torch.device("cpu")
-    model = make_model(_HetGNNArgs(), device)
+    model = make_model(_FrameHeteroArgs(), device)
     node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
 
     loss, beta_t = training_step(
@@ -228,13 +228,13 @@ def test_sample_positions_stays_finite_with_clipping() -> None:
     assert torch.isfinite(trajectory[-1]).all()
 
 
-def test_sample_positions_keeps_protein_anchor_with_hetgnn_backbone() -> None:
-    class _HetGNNArgs(_Args):
-        hetgnn_backbone = True
+def test_sample_positions_keeps_protein_anchor_with_frame_hetero_backbone() -> None:
+    class _FrameHeteroArgs(_Args):
+        frame_hetero_backbone = True
 
     device = torch.device("cpu")
     node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
-    model = make_model(_HetGNNArgs(), device, node_dim=node_features.shape[1])
+    model = make_model(_FrameHeteroArgs(), device, node_dim=node_features.shape[1])
 
     sampled_positions, trajectory = sample_positions(
         model,
@@ -291,7 +291,7 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
         beta_min=0.1,
         beta_max=2.0,
         ligand_bond_weight=0.5,
-        hetgnn_backbone=False,
+        frame_hetero_backbone=False,
     )
 
     assert torch.isfinite(loss)
