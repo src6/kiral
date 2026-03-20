@@ -1,0 +1,322 @@
+"""Aggregate experiment logs into report-ready comparison summaries."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+
+KV_LINE_RE = re.compile(r"^- (?P<key>[^:]+): `(?P<value>.*)`$")
+FINAL_LOSS_RE = re.compile(r"^- Final loss: `(?P<loss>[^`]+)` at step `(?P<step>[^`]+)`$")
+PROTEIN_PATH_RE = re.compile(r"/(?P<complex_id>[^/]+)/(?P=complex_id)_protein\.pdb")
+
+
+@dataclass(frozen=True)
+class ExperimentRecord:
+    complex_id: str
+    model: str
+    log_path: Path
+    command: str
+    graph_source: str
+    training_steps: int
+    sample_steps: int
+    node_count: int
+    edge_count: int
+    best_loss: float
+    final_loss: float
+    training_seconds: float
+    raw_ligand_rmse: float | None
+    aligned_ligand_rmsd: float | None
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Aggregate experiment logs into a cross-complex comparison summary"
+    )
+    parser.add_argument(
+        "--log-glob",
+        default="docs/training/*log.md",
+        help="Glob used to discover experiment logs",
+    )
+    parser.add_argument(
+        "--output-markdown",
+        type=Path,
+        default=Path("docs/training/cross_complex_comparison.md"),
+        help="Path for the markdown summary",
+    )
+    parser.add_argument(
+        "--output-csv",
+        type=Path,
+        default=Path("docs/training/cross_complex_comparison.csv"),
+        help="Path for the CSV export",
+    )
+    parser.add_argument(
+        "--models",
+        choices=("primary", "all"),
+        default="primary",
+        help="Whether to summarize only the baseline/final comparison or all discovered model variants",
+    )
+    return parser
+
+
+def parse_experiment_log(path: Path) -> ExperimentRecord:
+    values: dict[str, str] = {}
+    final_loss = None
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            final_match = FINAL_LOSS_RE.match(line)
+            if final_match is not None:
+                values["Final loss"] = final_match.group("loss")
+                values["Final step"] = final_match.group("step")
+                final_loss = float(final_match.group("loss"))
+                continue
+            kv_match = KV_LINE_RE.match(line)
+            if kv_match is not None:
+                values[kv_match.group("key")] = kv_match.group("value")
+
+    if final_loss is None:
+        raise ValueError(f"Could not parse final loss from {path}.")
+
+    command = values["Command"]
+    complex_id = infer_complex_id(command, path)
+    model = infer_model(command)
+    return ExperimentRecord(
+        complex_id=complex_id,
+        model=model,
+        log_path=path,
+        command=command,
+        graph_source=values.get("Graph source", ""),
+        training_steps=int(values["Training steps"]),
+        sample_steps=int(values["Sample steps"]),
+        node_count=int(values["Node count"]),
+        edge_count=int(values["Edge count"]),
+        best_loss=float(values["Best loss"]),
+        final_loss=final_loss,
+        training_seconds=float(values["Training seconds"]),
+        raw_ligand_rmse=_optional_float(values.get("Raw Ligand Rmse")),
+        aligned_ligand_rmsd=_optional_float(values.get("Aligned Ligand Rmsd")),
+    )
+
+
+def infer_complex_id(command: str, path: Path) -> str:
+    match = PROTEIN_PATH_RE.search(command)
+    if match is not None:
+        return match.group("complex_id")
+    return path.name.split("_", 1)[0]
+
+
+def infer_model(command: str) -> str:
+    if "--hetgnn-backbone" in command or "--frame-hetero-backbone" in command:
+        return "heterogeneous frame-based backbone"
+    if "--complete-frame" in command and "--ligand-global-node" in command:
+        return "EGNN + complete frames + ligand context"
+    if "--complete-frame" in command:
+        return "EGNN + complete frames"
+    if "--ligand-global-node" in command:
+        return "EGNN + ligand context"
+    if "--hetero-edges" in command:
+        return "EGNN + typed edges"
+    return "EGNN baseline"
+
+
+def _optional_float(value: str | None) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def discover_records(pattern: str) -> list[ExperimentRecord]:
+    records = [parse_experiment_log(path) for path in sorted(Path().glob(pattern))]
+    return [
+        record
+        for record in records
+        if record.graph_source == "real_pair"
+        and record.raw_ligand_rmse is not None
+        and record.aligned_ligand_rmsd is not None
+    ]
+
+
+def select_records(records: list[ExperimentRecord], *, models: str) -> list[ExperimentRecord]:
+    preferred_models = {"EGNN baseline", "heterogeneous frame-based backbone"}
+    deduped: dict[tuple[str, str], ExperimentRecord] = {}
+    for record in records:
+        if models == "primary" and record.model not in preferred_models:
+            continue
+        current = deduped.get((record.complex_id, record.model))
+        if current is None or _record_priority(record) < _record_priority(current):
+            deduped[(record.complex_id, record.model)] = record
+    return sorted(deduped.values(), key=lambda item: (item.complex_id, item.model))
+
+
+def _record_priority(record: ExperimentRecord) -> tuple[int, int, int, int]:
+    name = record.log_path.name
+    return (
+        0 if record.training_steps >= 100 else 1,
+        0 if record.sample_steps >= 25 else 1,
+        1 if "rerun" in name else 0,
+        1 if "paper" in name else 0,
+        1 if "repro_check" in name else 0,
+        1 if "real_experiment" in name else 0,
+        len(name),
+    )
+
+
+def grouped_means(records: list[ExperimentRecord]) -> list[dict[str, float | str]]:
+    by_model: dict[str, list[ExperimentRecord]] = {}
+    for record in records:
+        by_model.setdefault(record.model, []).append(record)
+
+    rows: list[dict[str, float | str]] = []
+    for model, group in sorted(by_model.items()):
+        rows.append(
+            {
+                "model": model,
+                "complexes": len(group),
+                "mean_best_loss": sum(item.best_loss for item in group) / len(group),
+                "mean_final_loss": sum(item.final_loss for item in group) / len(group),
+                "mean_raw_ligand_rmse": sum(item.raw_ligand_rmse or 0.0 for item in group) / len(group),
+                "mean_aligned_ligand_rmsd": sum(item.aligned_ligand_rmsd or 0.0 for item in group) / len(group),
+                "mean_training_seconds": sum(item.training_seconds for item in group) / len(group),
+            }
+        )
+    return rows
+
+
+def write_csv(path: Path, records: list[ExperimentRecord]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "complex_id",
+                "model",
+                "best_loss",
+                "final_loss",
+                "raw_ligand_rmse",
+                "aligned_ligand_rmsd",
+                "training_seconds",
+                "node_count",
+                "edge_count",
+                "log_path",
+            ]
+        )
+        for record in records:
+            writer.writerow(
+                [
+                    record.complex_id,
+                    record.model,
+                    f"{record.best_loss:.6f}",
+                    f"{record.final_loss:.6f}",
+                    f"{(record.raw_ligand_rmse or 0.0):.6f}",
+                    f"{(record.aligned_ligand_rmsd or 0.0):.6f}",
+                    f"{record.training_seconds:.3f}",
+                    record.node_count,
+                    record.edge_count,
+                    record.log_path.as_posix(),
+                ]
+            )
+
+
+def write_markdown(path: Path, records: list[ExperimentRecord], means: list[dict[str, float | str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    baseline = next((row for row in means if row["model"] == "EGNN baseline"), None)
+    frame_backbone = next(
+        (row for row in means if row["model"] == "heterogeneous frame-based backbone"),
+        None,
+    )
+
+    lines = [
+        "# Cross-Complex Comparison",
+        "",
+        "This summary aggregates the primary real-pair CPU runs already stored in `docs/training/`.",
+        "Each complex/model pair is deduplicated to the strongest stored run using the recorded log metadata.",
+        "",
+        "## Per-Complex Results",
+        "",
+        "| Complex | Model | Best Loss | Final Loss | Raw Ligand RMSE | Aligned Ligand RMSD | Training Seconds |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for record in records:
+        lines.append(
+            f"| `{record.complex_id}` | {record.model} | `{record.best_loss:.6f}` | `{record.final_loss:.6f}` | "
+            f"`{(record.raw_ligand_rmse or 0.0):.6f}` | `{(record.aligned_ligand_rmsd or 0.0):.6f}` | `{record.training_seconds:.3f}` |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Aggregate Means",
+            "",
+            "| Model | Complexes | Mean Best Loss | Mean Final Loss | Mean Raw Ligand RMSE | Mean Aligned Ligand RMSD | Mean Training Seconds |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for row in means:
+        lines.append(
+            f"| {row['model']} | `{int(row['complexes'])}` | `{float(row['mean_best_loss']):.6f}` | `{float(row['mean_final_loss']):.6f}` | "
+            f"`{float(row['mean_raw_ligand_rmse']):.6f}` | `{float(row['mean_aligned_ligand_rmsd']):.6f}` | `{float(row['mean_training_seconds']):.3f}` |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+        ]
+    )
+
+    if baseline is not None and frame_backbone is not None:
+        raw_reduction = percent_reduction(
+            float(baseline["mean_raw_ligand_rmse"]),
+            float(frame_backbone["mean_raw_ligand_rmse"]),
+        )
+        aligned_reduction = percent_reduction(
+            float(baseline["mean_aligned_ligand_rmsd"]),
+            float(frame_backbone["mean_aligned_ligand_rmsd"]),
+        )
+        speed_multiplier = float(frame_backbone["mean_training_seconds"]) / float(
+            baseline["mean_training_seconds"]
+        )
+        lines.extend(
+            [
+                f"- Across the stored comparison runs, the heterogeneous frame-based backbone reduces mean raw ligand RMSE by `{raw_reduction:.1f}%` relative to the EGNN baseline.",
+                f"- Across the same runs, the heterogeneous frame-based backbone reduces mean aligned ligand RMSD by `{aligned_reduction:.1f}%`.",
+                f"- The improvement is not free: the heterogeneous frame-based backbone is roughly `{speed_multiplier:.2f}x` slower in mean training time.",
+                "- This is still a small-sample comparison with one seed per complex, so it strengthens the project narrative but does not justify benchmark-scale claims.",
+                "",
+                "## Source Logs",
+                "",
+            ]
+        )
+
+    for record in records:
+        lines.append(f"- `{record.complex_id}` {record.model}: `{record.log_path.as_posix()}`")
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def percent_reduction(baseline: float, improved: float) -> float:
+    if baseline == 0.0:
+        return 0.0
+    return 100.0 * (baseline - improved) / baseline
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    records = select_records(discover_records(args.log_glob), models=args.models)
+    if not records:
+        raise ValueError(f"No comparable experiment logs found for pattern {args.log_glob!r}.")
+    means = grouped_means(records)
+    write_csv(args.output_csv, records)
+    write_markdown(args.output_markdown, records, means)
+    print(f"markdown_path={args.output_markdown}")
+    print(f"csv_path={args.output_csv}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
