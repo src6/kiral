@@ -9,9 +9,46 @@ from equidock_diff.data.pipeline import (
     build_complete_edge_index,
     build_graph_batch,
     build_radius_edge_index,
+    graph_cache_path,
     load_protein_graph,
     load_protein_ligand_graph,
+    load_protein_ligand_graph_cached,
 )
+from equidock_diff.data.io import (
+    ProteinLigandPaths,
+    filter_paths_by_complex_ids,
+    load_split_complex_ids,
+)
+
+
+def _write_test_pair(tmp_path: Path) -> tuple[Path, Path]:
+    rdkit = pytest.importorskip("rdkit")
+    assert rdkit is not None
+
+    from rdkit import Chem  # type: ignore
+    from rdkit.Chem import AllChem  # type: ignore
+
+    ligand_path = tmp_path / "ethanol.sdf"
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    assert mol is not None
+    assert AllChem.EmbedMolecule(mol, randomSeed=0) == 0
+    writer = Chem.SDWriter(str(ligand_path))
+    writer.write(mol)
+    writer.close()
+
+    pdb_path = tmp_path / "toy_protein.pdb"
+    pdb_path.write_text(
+        "\n".join(
+            [
+                "ATOM      1  N   GLY A   1       0.000   4.000   0.000  1.00  0.00           N",
+                "ATOM      2  CA  GLY A   1       0.000  30.000   0.000  1.00  0.00           C",
+                "END",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return pdb_path, ligand_path
 
 
 def test_build_graph_batch_centers_ligand_and_crops_far_protein() -> None:
@@ -119,32 +156,7 @@ def test_build_radius_edge_index_keeps_local_neighbors() -> None:
 
 
 def test_load_protein_ligand_graph_from_files(tmp_path: Path) -> None:
-    rdkit = pytest.importorskip("rdkit")
-    assert rdkit is not None
-
-    from rdkit import Chem  # type: ignore
-    from rdkit.Chem import AllChem  # type: ignore
-
-    ligand_path = tmp_path / "ethanol.sdf"
-    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
-    assert mol is not None
-    assert AllChem.EmbedMolecule(mol, randomSeed=0) == 0
-    writer = Chem.SDWriter(str(ligand_path))
-    writer.write(mol)
-    writer.close()
-
-    pdb_path = tmp_path / "toy_protein.pdb"
-    pdb_path.write_text(
-        "\n".join(
-            [
-                "ATOM      1  N   GLY A   1       0.000   4.000   0.000  1.00  0.00           N",
-                "ATOM      2  CA  GLY A   1       0.000  30.000   0.000  1.00  0.00           C",
-                "END",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    pdb_path, ligand_path = _write_test_pair(tmp_path)
 
     batch = load_protein_ligand_graph(
         pdb_path,
@@ -164,3 +176,116 @@ def test_load_protein_ligand_graph_from_files(tmp_path: Path) -> None:
     assert batch.ligand_bond_index is not None
     assert batch.ligand_bond_index.shape[0] == 2
     assert torch.all(batch.ligand_bond_index < ligand_count)
+
+
+def test_load_split_complex_ids_ignores_comments_and_blank_lines(tmp_path: Path) -> None:
+    split_path = tmp_path / "train.txt"
+    split_path.write_text(
+        "\n".join(
+            [
+                "# comment",
+                "",
+                "10gs",
+                "11gs extra_token_ignored",
+                "  ",
+                "1a30",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    complex_ids = load_split_complex_ids(split_path)
+
+    assert complex_ids == ["10gs", "11gs", "1a30"]
+
+
+def test_filter_paths_by_complex_ids_preserves_requested_order() -> None:
+    paths = [
+        ProteinLigandPaths(Path("root/10gs_protein.pdb"), Path("root/10gs_ligand.sdf")),
+        ProteinLigandPaths(Path("root/11gs_protein.pdb"), Path("root/11gs_ligand.sdf")),
+        ProteinLigandPaths(Path("root/1a30_protein.pdb"), Path("root/1a30_ligand.sdf")),
+    ]
+
+    selected = filter_paths_by_complex_ids(paths, ["1a30", "10gs"])
+
+    assert [entry.complex_id for entry in selected] == ["1a30", "10gs"]
+
+
+def test_filter_paths_by_complex_ids_raises_for_missing_complex() -> None:
+    paths = [
+        ProteinLigandPaths(Path("root/10gs_protein.pdb"), Path("root/10gs_ligand.sdf")),
+    ]
+
+    with pytest.raises(ValueError, match="Missing complexes"):
+        filter_paths_by_complex_ids(paths, ["10gs", "11gs"])
+
+
+def test_load_protein_ligand_graph_cached_reuses_saved_graph(tmp_path: Path) -> None:
+    pdb_path, ligand_path = _write_test_pair(tmp_path)
+    cache_dir = tmp_path / "graph_cache"
+
+    first_batch = load_protein_ligand_graph_cached(
+        pdb_path,
+        ligand_path,
+        cutoff=10.0,
+        edge_cutoff=4.5,
+        cache_dir=cache_dir,
+    )
+    cache_path = graph_cache_path(
+        cache_dir,
+        pdb_path,
+        ligand_path,
+        cutoff=10.0,
+        edge_cutoff=4.5,
+    )
+    assert cache_path.exists()
+
+    second_batch = load_protein_ligand_graph_cached(
+        pdb_path,
+        ligand_path,
+        cutoff=10.0,
+        edge_cutoff=4.5,
+        cache_dir=cache_dir,
+    )
+
+    assert len(list(cache_dir.glob("*.pt"))) == 1
+    assert torch.equal(first_batch.node_features, second_batch.node_features)
+    assert torch.equal(first_batch.edge_index, second_batch.edge_index)
+    assert torch.allclose(first_batch.positions, second_batch.positions)
+
+
+def test_load_protein_ligand_graph_cached_invalidates_when_input_changes(tmp_path: Path) -> None:
+    pdb_path, ligand_path = _write_test_pair(tmp_path)
+    cache_dir = tmp_path / "graph_cache"
+
+    original_batch = load_protein_ligand_graph_cached(
+        pdb_path,
+        ligand_path,
+        cutoff=10.0,
+        edge_cutoff=4.5,
+        cache_dir=cache_dir,
+    )
+
+    pdb_path.write_text(
+        "\n".join(
+            [
+                "ATOM      1  N   GLY A   1       0.000   2.500   0.000  1.00  0.00           N",
+                "ATOM      2  CA  GLY A   1       0.000  30.000   0.000  1.00  0.00           C",
+                "END",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    updated_batch = load_protein_ligand_graph_cached(
+        pdb_path,
+        ligand_path,
+        cutoff=10.0,
+        edge_cutoff=4.5,
+        cache_dir=cache_dir,
+    )
+
+    assert len(list(cache_dir.glob("*.pt"))) == 2
+    assert not torch.allclose(original_batch.positions, updated_batch.positions)

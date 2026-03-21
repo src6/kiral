@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 
 import torch
@@ -21,6 +22,9 @@ class GraphBatch:
     edge_index: torch.Tensor
     mask: torch.Tensor | None = None
     ligand_bond_index: torch.Tensor | None = None
+
+
+GRAPH_CACHE_FORMAT_VERSION = 1
 
 
 def _normalize_element(symbol: str) -> str:
@@ -108,6 +112,92 @@ def load_protein_graph(pdb_path: str | Path) -> tuple[torch.Tensor, torch.Tensor
 
     positions = torch.tensor(coords, dtype=torch.float32)
     return node_features, positions
+
+
+def move_graph_batch(batch: GraphBatch, device: torch.device) -> GraphBatch:
+    return GraphBatch(
+        node_features=batch.node_features.to(device),
+        positions=batch.positions.to(device),
+        edge_index=batch.edge_index.to(device),
+        mask=None if batch.mask is None else batch.mask.to(device),
+        ligand_bond_index=None
+        if batch.ligand_bond_index is None
+        else batch.ligand_bond_index.to(device),
+    )
+
+
+def graph_batch_to_cpu(batch: GraphBatch) -> GraphBatch:
+    return move_graph_batch(batch, torch.device("cpu"))
+
+
+def graph_cache_path(
+    cache_dir: Path,
+    protein_path: str | Path,
+    ligand_path: str | Path,
+    *,
+    cutoff: float,
+    edge_cutoff: float,
+) -> Path:
+    protein = Path(protein_path)
+    ligand = Path(ligand_path)
+    protein_stat = protein.stat()
+    ligand_stat = ligand.stat()
+    signature = "|".join(
+        [
+            str(GRAPH_CACHE_FORMAT_VERSION),
+            str(protein.resolve()),
+            str(protein_stat.st_mtime_ns),
+            str(protein_stat.st_size),
+            str(ligand.resolve()),
+            str(ligand_stat.st_mtime_ns),
+            str(ligand_stat.st_size),
+            f"{cutoff:.4f}",
+            f"{edge_cutoff:.4f}",
+        ]
+    )
+    digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16]
+    stem = protein.name.replace("_protein.pdb", "")
+    return cache_dir / f"{stem}_{digest}.pt"
+
+
+def _serialize_graph_batch(batch: GraphBatch) -> dict[str, object]:
+    cpu_batch = graph_batch_to_cpu(batch)
+    return {
+        "format_version": GRAPH_CACHE_FORMAT_VERSION,
+        "node_features": cpu_batch.node_features,
+        "positions": cpu_batch.positions,
+        "edge_index": cpu_batch.edge_index,
+        "mask": cpu_batch.mask,
+        "ligand_bond_index": cpu_batch.ligand_bond_index,
+    }
+
+
+def _deserialize_graph_batch(payload: dict[str, object]) -> GraphBatch:
+    format_version = int(payload.get("format_version", -1))
+    if format_version != GRAPH_CACHE_FORMAT_VERSION:
+        raise ValueError(
+            f"Unsupported graph cache format: {format_version} (expected {GRAPH_CACHE_FORMAT_VERSION})."
+        )
+    return GraphBatch(
+        node_features=payload["node_features"],  # type: ignore[arg-type]
+        positions=payload["positions"],  # type: ignore[arg-type]
+        edge_index=payload["edge_index"],  # type: ignore[arg-type]
+        mask=payload.get("mask"),  # type: ignore[arg-type]
+        ligand_bond_index=payload.get("ligand_bond_index"),  # type: ignore[arg-type]
+    )
+
+
+def load_graph_batch_cache(path: Path) -> GraphBatch:
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        payload = torch.load(path, map_location="cpu")
+    return _deserialize_graph_batch(payload)
+
+
+def write_graph_batch_cache(path: Path, batch: GraphBatch) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(_serialize_graph_batch(batch), path)
 
 
 def _require_ligand_graph(outcome: FeaturizeOutcome, ligand_path: Path) -> torch.Tensor:
@@ -218,3 +308,39 @@ def load_protein_ligand_graph(
         ligand_bond_index=ligand_graph.edge_index,
         cutoff=cutoff,
     )
+
+
+def load_protein_ligand_graph_cached(
+    protein_path: str | Path,
+    ligand_path: str | Path,
+    *,
+    cutoff: float = 10.0,
+    edge_cutoff: float = 4.5,
+    cache_dir: Path | None = None,
+) -> GraphBatch:
+    if cache_dir is None:
+        return load_protein_ligand_graph(
+            protein_path,
+            ligand_path,
+            cutoff=cutoff,
+            edge_cutoff=edge_cutoff,
+        )
+
+    cache_path = graph_cache_path(
+        cache_dir,
+        protein_path,
+        ligand_path,
+        cutoff=cutoff,
+        edge_cutoff=edge_cutoff,
+    )
+    if cache_path.exists():
+        return load_graph_batch_cache(cache_path)
+
+    batch = load_protein_ligand_graph(
+        protein_path,
+        ligand_path,
+        cutoff=cutoff,
+        edge_cutoff=edge_cutoff,
+    )
+    write_graph_batch_cache(cache_path, batch)
+    return batch

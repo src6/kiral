@@ -11,13 +11,18 @@ from equidock_diff.utils.artifacts import (
     write_ligand_artifacts,
 )
 from equidock_diff.train import (
+    build_dataset_examples,
     build_synthetic_graph,
+    dataset_example_for_step,
     ligand_bond_length_loss,
+    load_checkpoint,
     load_graph_inputs,
     make_model,
+    save_checkpoint,
     sample_positions,
     training_step,
     training_step_with_breakdown,
+    validate_resume_compatibility,
 )
 
 
@@ -28,6 +33,29 @@ class _Args:
     ligand_global_node = False
     complete_frame = False
     frame_hetero_backbone = False
+    learning_rate = 1e-3
+    ligand_bond_weight = 0.0
+    beta_min = 0.1
+    beta_max = 2.0
+    noise_schedule = "linear"
+    cosine_offset = 0.008
+    cosine_nu = 1.5
+    protein_path = None
+    ligand_path = None
+    crop_cutoff = 10.0
+    edge_cutoff = 4.5
+    batch_size = 1
+    num_nodes = 8
+    steps = 5
+    sample_steps = 8
+    checkpoint_path = None
+    checkpoint_every = 0
+    resume_from = None
+    dataset_root = None
+    dataset_split = None
+    dataset_limit = 0
+    dataset_cache_dir = Path("data/.cache/equidock_diff_graphs")
+    seed = 42
 
 
 def test_training_step_is_finite() -> None:
@@ -201,6 +229,31 @@ def test_training_step_is_finite_for_real_pair_graph(tmp_path: Path) -> None:
     assert beta_t > 0.0
 
 
+def test_training_step_is_finite_with_cosine_schedule() -> None:
+    class _CosineArgs(_Args):
+        noise_schedule = "cosine"
+        cosine_nu = 1.5
+
+    device = torch.device("cpu")
+    model = make_model(_CosineArgs(), device)
+    node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
+
+    loss, beta_t = training_step(
+        model,
+        node_features,
+        positions,
+        edge_index,
+        beta_min=0.1,
+        beta_max=2.0,
+        noise_schedule="cosine",
+        cosine_offset=0.008,
+        cosine_nu=1.5,
+    )
+
+    assert torch.isfinite(loss)
+    assert beta_t > 0.0
+
+
 def test_sample_positions_stays_finite_with_clipping() -> None:
     class _SampleArgs(_Args):
         hidden_dim = 32
@@ -254,6 +307,164 @@ def test_sample_positions_keeps_protein_anchor_with_frame_hetero_backbone() -> N
     protein_mask = node_features[:, 1] > 0.5
     assert torch.allclose(sampled_positions[protein_mask], positions[protein_mask])
     assert torch.allclose(trajectory[-1][protein_mask], positions[protein_mask].cpu())
+
+
+def test_checkpoint_round_trip_restores_training_state(tmp_path: Path) -> None:
+    device = torch.device("cpu")
+    args = _Args()
+    model = make_model(args, device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    node_features, positions, edge_index = build_synthetic_graph(args.num_nodes, 1, device)
+
+    optimizer.zero_grad(set_to_none=True)
+    loss, beta_t, _, _ = training_step_with_breakdown(
+        model,
+        node_features,
+        positions,
+        edge_index,
+        None,
+        args.beta_min,
+        args.beta_max,
+        ligand_bond_weight=args.ligand_bond_weight,
+        frame_hetero_backbone=args.frame_hetero_backbone,
+    )
+    loss.backward()
+    optimizer.step()
+    loss_rows = [(1, float(loss.item()), beta_t)]
+
+    checkpoint_path = tmp_path / "resume.pt"
+    save_checkpoint(
+        checkpoint_path,
+        model=model,
+        optimizer=optimizer,
+        args=args,
+        completed_steps=1,
+        training_seconds=1.25,
+        loss_rows=loss_rows,
+        graph_source="synthetic",
+        node_feature_dim=node_features.size(-1),
+    )
+
+    restored_model = make_model(args, device)
+    restored_optimizer = torch.optim.AdamW(restored_model.parameters(), lr=args.learning_rate)
+    checkpoint_state = load_checkpoint(
+        checkpoint_path,
+        model=restored_model,
+        optimizer=restored_optimizer,
+        device=device,
+    )
+
+    validate_resume_compatibility(
+        args,
+        checkpoint_state,
+        graph_source="synthetic",
+        node_feature_dim=node_features.size(-1),
+    )
+
+    assert checkpoint_state.completed_steps == 1
+    assert checkpoint_state.training_seconds == pytest.approx(1.25)
+    assert checkpoint_state.loss_rows == loss_rows
+
+    for current_param, restored_param in zip(model.parameters(), restored_model.parameters(), strict=True):
+        assert torch.allclose(current_param, restored_param)
+
+
+def test_validate_resume_compatibility_rejects_mismatched_settings(tmp_path: Path) -> None:
+    device = torch.device("cpu")
+    args = _Args()
+    model = make_model(args, device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    checkpoint_path = tmp_path / "resume.pt"
+
+    save_checkpoint(
+        checkpoint_path,
+        model=model,
+        optimizer=optimizer,
+        args=args,
+        completed_steps=2,
+        training_seconds=0.5,
+        loss_rows=[(1, 0.1, 0.2), (2, 0.05, 0.3)],
+        graph_source="synthetic",
+        node_feature_dim=4,
+    )
+
+    checkpoint_state = load_checkpoint(
+        checkpoint_path,
+        model=model,
+        optimizer=optimizer,
+        device=device,
+    )
+
+    class _MismatchedArgs(_Args):
+        hidden_dim = 64
+
+    with pytest.raises(ValueError, match="Checkpoint is not compatible"):
+        validate_resume_compatibility(
+            _MismatchedArgs(),
+            checkpoint_state,
+            graph_source="synthetic",
+            node_feature_dim=4,
+        )
+
+
+def test_validate_resume_compatibility_rejects_changed_dataset_order(tmp_path: Path) -> None:
+    device = torch.device("cpu")
+    args = _Args()
+    model = make_model(args, device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    checkpoint_path = tmp_path / "resume.pt"
+
+    save_checkpoint(
+        checkpoint_path,
+        model=model,
+        optimizer=optimizer,
+        args=args,
+        completed_steps=2,
+        training_seconds=0.5,
+        loss_rows=[(1, 0.1, 0.2), (2, 0.05, 0.3)],
+        graph_source="dataset",
+        node_feature_dim=17,
+        source_ids=["10gs", "11gs"],
+    )
+
+    checkpoint_state = load_checkpoint(
+        checkpoint_path,
+        model=model,
+        optimizer=optimizer,
+        device=device,
+    )
+
+    with pytest.raises(ValueError, match="dataset/source ordering changed"):
+        validate_resume_compatibility(
+            args,
+            checkpoint_state,
+            graph_source="dataset",
+            node_feature_dim=17,
+            source_ids=["11gs", "10gs"],
+        )
+
+
+def test_build_dataset_examples_uses_split_order(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "pdbbind_v2020"
+    base_dir = dataset_root / "protein_ligand_general_minus_refined" / "1981-2000"
+    for complex_id in ("10gs", "11gs", "1a30"):
+        complex_dir = base_dir / complex_id
+        complex_dir.mkdir(parents=True, exist_ok=True)
+        (complex_dir / f"{complex_id}_protein.pdb").write_text("", encoding="utf-8")
+        (complex_dir / f"{complex_id}_ligand.sdf").write_text("", encoding="utf-8")
+
+    split_path = tmp_path / "train.txt"
+    split_path.write_text("1a30\n10gs\n", encoding="utf-8")
+
+    args = _Args()
+    args.dataset_root = dataset_root
+    args.dataset_split = split_path
+    args.dataset_limit = 0
+
+    examples = build_dataset_examples(args)
+
+    assert [example.complex_id for example in examples] == ["1a30", "10gs"]
+    assert dataset_example_for_step(examples, 3).complex_id == "1a30"
 
 
 def test_ligand_bond_length_loss_is_zero_for_matching_bonds() -> None:
