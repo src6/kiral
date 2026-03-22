@@ -2,6 +2,8 @@
 
 Equidock-Diff is an SE(3)-equivariant diffusion prototype for protein-ligand docking. The repository focuses on a compact geometric pipeline: graph construction for protein-ligand pairs, an EGNN-style score model, a VP-SDE sampler, and explicit equivariance sanity checks.
 
+Required local tools: Python `3.13+` and `uv`. Project Python dependencies such as PyTorch, Torch Geometric, RDKit, and Matplotlib are declared in `pyproject.toml` and can be installed with `uv sync`.
+
 ## Repository Layout
 
 - `src/equidock_diff/data/`: protein-ligand graph construction and centering utilities
@@ -19,6 +21,7 @@ Equidock-Diff is an SE(3)-equivariant diffusion prototype for protein-ligand doc
 ## Quick Start
 
 ```bash
+uv sync
 uv run python -m pytest
 uv run python -m equidock_diff.sanity_check --trials 8 --device cpu
 uv run python -m equidock_diff.train --device cpu --steps 20 --sample-steps 10
