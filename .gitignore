@@ -14,6 +14,7 @@ wheels/
 
 # Local tooling
 .pre-commit-config.local.yaml
+.mpl-cache/
 
 # macOS noise
 .DS_Store

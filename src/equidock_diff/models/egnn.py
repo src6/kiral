@@ -61,6 +61,14 @@ def _safe_unit(vector: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     return torch.where(norm > eps, unit, torch.zeros_like(unit))
 
 
+def _make_identity_linear(dim: int) -> nn.Linear:
+    layer = nn.Linear(dim, dim)
+    nn.init.eye_(layer.weight)
+    if layer.bias is not None:
+        nn.init.zeros_(layer.bias)
+    return layer
+
+
 def complete_frame_basis(
     src_positions: torch.Tensor,
     dst_positions: torch.Tensor,
@@ -129,11 +137,8 @@ class EGNNLayer(nn.Module):
             )
         if config.use_hetero_edges:
             self.message_transforms = nn.ModuleList(
-                [nn.Linear(config.hidden_dim, config.hidden_dim) for _ in range(NUM_EDGE_TYPES)]
+                [_make_identity_linear(config.hidden_dim) for _ in range(NUM_EDGE_TYPES)]
             )
-            for transform in self.message_transforms:
-                nn.init.eye_(transform.weight)
-                nn.init.zeros_(transform.bias)
         else:
             self.message_transforms = None
         if config.use_ligand_global_node:
@@ -316,6 +321,8 @@ class EGNNScoreNet(nn.Module):
         ):
             ligand_mask = infer_ligand_mask(node_features)
         if self.config.use_hetero_edges or self.config.use_frame_hetero_backbone:
+            if ligand_mask is None:
+                raise ValueError("ligand_mask is required for heterogenous edge processing.")
             edge_types = infer_edge_types(edge_index, ligand_mask)
         else:
             edge_types = torch.zeros(
