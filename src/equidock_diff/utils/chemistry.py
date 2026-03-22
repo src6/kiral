@@ -42,6 +42,7 @@ SkipReason = Literal[
     "empty_after_h_removal",
     "no_bonds",
 ]
+RawSkipReason = SkipReason | Literal["unsupported_extension"]
 
 
 @dataclass(frozen=True)
@@ -94,11 +95,15 @@ class LigandSkipCounter:
         }
 
 
-def _skip(reason: str, counter: LigandSkipCounter | None) -> FeaturizeOutcome:
-    normalized_reason = "parse_failed" if reason == "unsupported_extension" else reason
+def _skip(reason: RawSkipReason, counter: LigandSkipCounter | None) -> FeaturizeOutcome:
+    normalized_reason: SkipReason
+    if reason == "unsupported_extension":
+        normalized_reason = "parse_failed"
+    else:
+        normalized_reason = reason
     if counter is not None:
         counter.add(normalized_reason)
-    return FeaturizeOutcome(skip_reason=normalized_reason)  # type: ignore[arg-type]
+    return FeaturizeOutcome(skip_reason=normalized_reason)
 
 
 def _normalize_atom_symbol(symbol: str) -> str:

@@ -10,6 +10,7 @@ from equidock_diff.utils.chemistry import (
     ATOM_FEATURE_DIM,
     ATOM_SYMBOL_TO_INDEX,
     FeaturizeOutcome,
+    LigandGraph,
     featurize_ligand,
 )
 from equidock_diff.utils.geometry import batched_centroid, relative_positions
@@ -200,7 +201,10 @@ def write_graph_batch_cache(path: Path, batch: GraphBatch) -> None:
     torch.save(_serialize_graph_batch(batch), path)
 
 
-def _require_ligand_graph(outcome: FeaturizeOutcome, ligand_path: Path) -> torch.Tensor:
+def _require_ligand_graph(
+    outcome: FeaturizeOutcome,
+    ligand_path: Path,
+) -> LigandGraph:
     if outcome.skipped or outcome.graph is None:
         reason = outcome.skip_reason or "unknown"
         raise ValueError(f"Unable to featurize ligand {ligand_path}: {reason}.")
@@ -227,7 +231,7 @@ def build_graph_batch(
     node_features: torch.Tensor,
     positions: torch.Tensor,
     edge_index: torch.Tensor,
-    mask: torch.Tensor | None = None, # ligand mask
+    mask: torch.Tensor | None = None,  # ligand mask
     ligand_bond_index: torch.Tensor | None = None,
     cutoff: float = 10.0,
 ) -> GraphBatch:
@@ -236,7 +240,7 @@ def build_graph_batch(
 
     ligand_mask = mask
 
-    # Translation invariance
+    # Center on the ligand so downstream geometry depends on relative structure.
     centered_pos = center_on_ligand(positions, ligand_mask)
 
     # Identity encoding
@@ -278,7 +282,7 @@ def build_graph_batch(
         node_features=x[final_mask],
         positions=centered_pos[final_mask],
         edge_index=new_edge_index,
-        mask=final_mask, # New batch mask
+        mask=final_mask,  # Original-node mask retained for debugging/tests.
         ligand_bond_index=remapped_ligand_bond_index,
     )
 

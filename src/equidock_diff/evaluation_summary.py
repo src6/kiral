@@ -152,7 +152,9 @@ def select_records(records: list[ExperimentRecord], *, models: str) -> list[Expe
     return sorted(deduped.values(), key=lambda item: (item.complex_id, item.model))
 
 
-def _record_priority(record: ExperimentRecord) -> tuple[int, int, int, int]:
+def _record_priority(
+    record: ExperimentRecord,
+) -> tuple[int, int, int, int, int, int, int]:
     name = record.log_path.name
     return (
         0 if record.training_steps >= 100 else 1,
