@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from equidock_diff.evaluation_summary import (
     ExperimentRecord,
+    assert_expected_combinations_present,
     discover_records,
+    filter_records_by_manifest,
     grouped_means,
     infer_model,
     parse_experiment_log,
     percent_reduction,
+    resolve_expected_models,
+    resolve_expected_seeds,
     select_records,
 )
 
@@ -53,6 +59,7 @@ def test_parse_experiment_log_extracts_metrics(tmp_path: Path) -> None:
 
     assert record.complex_id == "10gs"
     assert record.model == "heterogeneous frame-based backbone"
+    assert record.seed == 42
     assert record.graph_source == "real_pair"
     assert record.final_loss == 0.061780
     assert record.best_loss == 0.039261
@@ -64,6 +71,7 @@ def test_select_records_prefers_non_rerun_logs() -> None:
     preferred = ExperimentRecord(
         complex_id="10gs",
         model="heterogeneous frame-based backbone",
+        seed=42,
         log_path=Path("docs/training/10gs_hetgnn_compare_log.md"),
         command="",
         graph_source="real_pair",
@@ -80,6 +88,7 @@ def test_select_records_prefers_non_rerun_logs() -> None:
     rerun = ExperimentRecord(
         complex_id="10gs",
         model="heterogeneous frame-based backbone",
+        seed=42,
         log_path=Path("docs/training/10gs_hetgnn_compare_rerun_log.md"),
         command="",
         graph_source="real_pair",
@@ -103,6 +112,7 @@ def test_select_records_prefers_full_runs_over_repro_checks() -> None:
     repro = ExperimentRecord(
         complex_id="10gs",
         model="EGNN baseline",
+        seed=42,
         log_path=Path("docs/training/10gs_repro_check_log.md"),
         command="",
         graph_source="real_pair",
@@ -119,6 +129,7 @@ def test_select_records_prefers_full_runs_over_repro_checks() -> None:
     full = ExperimentRecord(
         complex_id="10gs",
         model="EGNN baseline",
+        seed=42,
         log_path=Path("docs/training/10gs_hetgnn_compare_baseline_log.md"),
         command="",
         graph_source="real_pair",
@@ -143,6 +154,7 @@ def test_grouped_means_and_percent_reduction() -> None:
         ExperimentRecord(
             complex_id="10gs",
             model="EGNN baseline",
+            seed=42,
             log_path=Path("a"),
             command="",
             graph_source="real_pair",
@@ -159,6 +171,7 @@ def test_grouped_means_and_percent_reduction() -> None:
         ExperimentRecord(
             complex_id="11gs",
             model="heterogeneous frame-based backbone",
+            seed=42,
             log_path=Path("b"),
             command="",
             graph_source="real_pair",
@@ -239,3 +252,86 @@ def test_discover_records_filters_non_real_pair_logs(
     records = discover_records("*_log.md")
 
     assert [record.log_path.name for record in records] == ["10gs_baseline_log.md"]
+
+
+def test_filter_records_by_manifest_preserves_manifest_order() -> None:
+    records = [
+        ExperimentRecord(
+            complex_id="10gs",
+            model="EGNN baseline",
+            seed=42,
+            log_path=Path("10gs_log.md"),
+            command="",
+            graph_source="real_pair",
+            training_steps=100,
+            sample_steps=25,
+            node_count=1,
+            edge_count=1,
+            best_loss=0.1,
+            final_loss=0.2,
+            training_seconds=1.0,
+            raw_ligand_rmse=3.0,
+            aligned_ligand_rmsd=2.0,
+        ),
+        ExperimentRecord(
+            complex_id="11gs",
+            model="EGNN baseline",
+            seed=42,
+            log_path=Path("11gs_log.md"),
+            command="",
+            graph_source="real_pair",
+            training_steps=100,
+            sample_steps=25,
+            node_count=1,
+            edge_count=1,
+            best_loss=0.2,
+            final_loss=0.3,
+            training_seconds=1.0,
+            raw_ligand_rmse=4.0,
+            aligned_ligand_rmsd=3.0,
+        ),
+    ]
+
+    filtered = filter_records_by_manifest(records, ["11gs", "10gs"])
+
+    assert [record.complex_id for record in filtered] == ["11gs", "10gs"]
+
+
+def test_assert_expected_combinations_present_checks_models_and_seeds() -> None:
+    records = [
+        ExperimentRecord(
+            complex_id="10gs",
+            model="EGNN baseline",
+            seed=42,
+            log_path=Path("10gs_baseline_log.md"),
+            command="",
+            graph_source="real_pair",
+            training_steps=100,
+            sample_steps=25,
+            node_count=1,
+            edge_count=1,
+            best_loss=0.1,
+            final_loss=0.2,
+            training_seconds=1.0,
+            raw_ligand_rmse=3.0,
+            aligned_ligand_rmsd=2.0,
+        )
+    ]
+
+    with pytest.raises(ValueError, match="Missing expected experiment logs"):
+        assert_expected_combinations_present(
+            records,
+            manifest_complex_ids=["10gs"],
+            expected_models=["EGNN baseline", "heterogeneous frame-based backbone"],
+            expected_seeds=[42],
+        )
+
+
+def test_resolve_expected_models_and_seeds_defaults() -> None:
+    assert resolve_expected_models(models="primary", expected_models=None) == [
+        "EGNN baseline",
+        "heterogeneous frame-based backbone",
+    ]
+    assert resolve_expected_models(models="all", expected_models=None) == []
+    assert resolve_expected_seeds(None) == [42]
+    assert resolve_expected_seeds([43, 44]) == [43, 44]
