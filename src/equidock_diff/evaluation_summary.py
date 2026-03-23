@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,7 @@ class ExperimentRecord:
     complex_id: str
     model: str
     seed: int
+    noise_schedule: str
     log_path: Path
     command: str
     graph_source: str
@@ -34,6 +36,23 @@ class ExperimentRecord:
     training_seconds: float
     raw_ligand_rmse: float | None
     aligned_ligand_rmsd: float | None
+
+
+@dataclass(frozen=True)
+class SummaryRow:
+    model: str
+    noise_schedule: str | None
+    complexes: int
+    runs: int
+    mean_best_loss: float
+    mean_final_loss: float
+    mean_raw_ligand_rmse: float
+    std_raw_ligand_rmse: float
+    mean_aligned_ligand_rmsd: float
+    std_aligned_ligand_rmsd: float
+    success_at_2a: float
+    success_at_5a: float
+    mean_training_seconds: float
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,6 +108,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Seed expected for each manifest complex; may be passed multiple times",
     )
+    parser.add_argument(
+        "--output-latex",
+        type=Path,
+        default=None,
+        help="Optional path for a LaTeX summary table",
+    )
+    parser.add_argument(
+        "--group-by",
+        choices=("model", "model_schedule"),
+        default="model",
+        help="How to aggregate records in the summary outputs",
+    )
     return parser
 
 
@@ -118,6 +149,7 @@ def parse_experiment_log(path: Path) -> ExperimentRecord:
         complex_id=complex_id,
         model=model,
         seed=int(values.get("Seed", "42")),
+        noise_schedule=infer_noise_schedule(command),
         log_path=path,
         command=command,
         graph_source=values.get("Graph source", ""),
@@ -152,6 +184,12 @@ def infer_model(command: str) -> str:
     if "--hetero-edges" in command:
         return "EGNN + typed edges"
     return "EGNN baseline"
+
+
+def infer_noise_schedule(command: str) -> str:
+    if "--noise-schedule cosine" in command:
+        return "cosine"
+    return "linear"
 
 
 def _optional_float(value: str | None) -> float | None:
@@ -261,23 +299,53 @@ def assert_expected_combinations_present(
         raise ValueError(f"Missing expected experiment logs: {preview}")
 
 
-def grouped_means(records: list[ExperimentRecord]) -> list[dict[str, float | str]]:
-    by_model: dict[str, list[ExperimentRecord]] = {}
-    for record in records:
-        by_model.setdefault(record.model, []).append(record)
+def _mean(values: list[float]) -> float:
+    return statistics.fmean(values) if values else 0.0
 
-    rows: list[dict[str, float | str]] = []
-    for model, group in sorted(by_model.items()):
+
+def _stddev(values: list[float]) -> float:
+    if len(values) <= 1:
+        return 0.0
+    return statistics.pstdev(values)
+
+
+def success_rate(values: list[float], threshold: float) -> float:
+    if not values:
+        return 0.0
+    successes = sum(1 for value in values if value <= threshold)
+    return 100.0 * successes / len(values)
+
+
+def grouped_means(
+    records: list[ExperimentRecord],
+    *,
+    group_by: str = "model",
+) -> list[SummaryRow]:
+    groups: dict[tuple[str, str | None], list[ExperimentRecord]] = {}
+    for record in records:
+        key = (record.model, record.noise_schedule if group_by == "model_schedule" else None)
+        groups.setdefault(key, []).append(record)
+
+    rows: list[SummaryRow] = []
+    for (model, noise_schedule), group in sorted(groups.items()):
+        raw_rmses = [float(item.raw_ligand_rmse or 0.0) for item in group]
+        aligned_rmsds = [float(item.aligned_ligand_rmsd or 0.0) for item in group]
         rows.append(
-            {
-                "model": model,
-                "complexes": len(group),
-                "mean_best_loss": sum(item.best_loss for item in group) / len(group),
-                "mean_final_loss": sum(item.final_loss for item in group) / len(group),
-                "mean_raw_ligand_rmse": sum(item.raw_ligand_rmse or 0.0 for item in group) / len(group),
-                "mean_aligned_ligand_rmsd": sum(item.aligned_ligand_rmsd or 0.0 for item in group) / len(group),
-                "mean_training_seconds": sum(item.training_seconds for item in group) / len(group),
-            }
+            SummaryRow(
+                model=model,
+                noise_schedule=noise_schedule,
+                complexes=len({item.complex_id for item in group}),
+                runs=len(group),
+                mean_best_loss=_mean([item.best_loss for item in group]),
+                mean_final_loss=_mean([item.final_loss for item in group]),
+                mean_raw_ligand_rmse=_mean(raw_rmses),
+                std_raw_ligand_rmse=_stddev(raw_rmses),
+                mean_aligned_ligand_rmsd=_mean(aligned_rmsds),
+                std_aligned_ligand_rmsd=_stddev(aligned_rmsds),
+                success_at_2a=success_rate(aligned_rmsds, 2.0),
+                success_at_5a=success_rate(aligned_rmsds, 5.0),
+                mean_training_seconds=_mean([item.training_seconds for item in group]),
+            )
         )
     return rows
 
@@ -290,6 +358,8 @@ def write_csv(path: Path, records: list[ExperimentRecord]) -> None:
             [
                 "complex_id",
                 "model",
+                "seed",
+                "noise_schedule",
                 "best_loss",
                 "final_loss",
                 "raw_ligand_rmse",
@@ -305,6 +375,8 @@ def write_csv(path: Path, records: list[ExperimentRecord]) -> None:
                 [
                     record.complex_id,
                     record.model,
+                    record.seed,
+                    record.noise_schedule,
                     f"{record.best_loss:.6f}",
                     f"{record.final_loss:.6f}",
                     f"{(record.raw_ligand_rmse or 0.0):.6f}",
@@ -317,29 +389,50 @@ def write_csv(path: Path, records: list[ExperimentRecord]) -> None:
             )
 
 
-def write_markdown(path: Path, records: list[ExperimentRecord], means: list[dict[str, float | str]]) -> None:
+def write_markdown(
+    path: Path,
+    records: list[ExperimentRecord],
+    means: list[SummaryRow],
+    *,
+    group_by: str,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    baseline = next((row for row in means if row["model"] == "EGNN baseline"), None)
+    baseline = next(
+        (
+            row
+            for row in means
+            if row.model == "EGNN baseline"
+            and (group_by != "model_schedule" or row.noise_schedule == "linear")
+        ),
+        None,
+    )
     frame_backbone = next(
-        (row for row in means if row["model"] == "heterogeneous frame-based backbone"),
+        (
+            row
+            for row in means
+            if row.model == "heterogeneous frame-based backbone"
+            and (group_by != "model_schedule" or row.noise_schedule == "linear")
+        ),
         None,
     )
 
     lines = [
         "# Cross-Complex Comparison",
         "",
-        "This summary aggregates the primary real-pair CPU runs already stored in `docs/training/`.",
-        "Each complex/model pair is deduplicated to the strongest stored run using the recorded log metadata.",
+        "This summary aggregates the selected real-pair CPU runs already stored in `docs/training/`.",
+        "Canonical mode is deterministic once the complex manifest, model set, and seed set are fixed.",
         "",
         "## Per-Complex Results",
         "",
-        "| Complex | Model | Best Loss | Final Loss | Raw Ligand RMSE | Aligned Ligand RMSD | Training Seconds |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Complex | Model | Seed | Schedule | Best Loss | Final Loss | Raw Ligand RMSE | Aligned Ligand RMSD | Training Seconds |",
+        "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for record in records:
         lines.append(
-            f"| `{record.complex_id}` | {record.model} | `{record.best_loss:.6f}` | `{record.final_loss:.6f}` | "
-            f"`{(record.raw_ligand_rmse or 0.0):.6f}` | `{(record.aligned_ligand_rmsd or 0.0):.6f}` | `{record.training_seconds:.3f}` |"
+            f"| `{record.complex_id}` | {record.model} | `{record.seed}` | {record.noise_schedule} | "
+            f"`{record.best_loss:.6f}` | `{record.final_loss:.6f}` | "
+            f"`{(record.raw_ligand_rmse or 0.0):.6f}` | `{(record.aligned_ligand_rmsd or 0.0):.6f}` | "
+            f"`{record.training_seconds:.3f}` |"
         )
 
     lines.extend(
@@ -347,14 +440,16 @@ def write_markdown(path: Path, records: list[ExperimentRecord], means: list[dict
             "",
             "## Aggregate Means",
             "",
-            "| Model | Complexes | Mean Best Loss | Mean Final Loss | Mean Raw Ligand RMSE | Mean Aligned Ligand RMSD | Mean Training Seconds |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| Model | Schedule | Complexes | Runs | Mean Raw Ligand RMSE | Std Raw Ligand RMSE | Mean Aligned Ligand RMSD | Std Aligned Ligand RMSD | Success@2A | Success@5A | Mean Training Seconds |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for row in means:
         lines.append(
-            f"| {row['model']} | `{int(row['complexes'])}` | `{float(row['mean_best_loss']):.6f}` | `{float(row['mean_final_loss']):.6f}` | "
-            f"`{float(row['mean_raw_ligand_rmse']):.6f}` | `{float(row['mean_aligned_ligand_rmsd']):.6f}` | `{float(row['mean_training_seconds']):.3f}` |"
+            f"| {row.model} | {row.noise_schedule or '-'} | `{row.complexes}` | `{row.runs}` | "
+            f"`{row.mean_raw_ligand_rmse:.6f}` | `{row.std_raw_ligand_rmse:.6f}` | "
+            f"`{row.mean_aligned_ligand_rmsd:.6f}` | `{row.std_aligned_ligand_rmsd:.6f}` | "
+            f"`{row.success_at_2a:.1f}%` | `{row.success_at_5a:.1f}%` | `{row.mean_training_seconds:.3f}` |"
         )
 
     lines.extend(
@@ -367,22 +462,21 @@ def write_markdown(path: Path, records: list[ExperimentRecord], means: list[dict
 
     if baseline is not None and frame_backbone is not None:
         raw_reduction = percent_reduction(
-            float(baseline["mean_raw_ligand_rmse"]),
-            float(frame_backbone["mean_raw_ligand_rmse"]),
+            baseline.mean_raw_ligand_rmse,
+            frame_backbone.mean_raw_ligand_rmse,
         )
         aligned_reduction = percent_reduction(
-            float(baseline["mean_aligned_ligand_rmsd"]),
-            float(frame_backbone["mean_aligned_ligand_rmsd"]),
+            baseline.mean_aligned_ligand_rmsd,
+            frame_backbone.mean_aligned_ligand_rmsd,
         )
-        speed_multiplier = float(frame_backbone["mean_training_seconds"]) / float(
-            baseline["mean_training_seconds"]
-        )
+        speed_multiplier = frame_backbone.mean_training_seconds / baseline.mean_training_seconds
         lines.extend(
             [
-                f"- Across the stored comparison runs, the heterogeneous frame-based backbone reduces mean raw ligand RMSE by `{raw_reduction:.1f}%` relative to the EGNN baseline.",
+                f"- Across the selected comparison runs, the heterogeneous frame-based backbone reduces mean raw ligand RMSE by `{raw_reduction:.1f}%` relative to the EGNN baseline.",
                 f"- Across the same runs, the heterogeneous frame-based backbone reduces mean aligned ligand RMSD by `{aligned_reduction:.1f}%`.",
+                f"- Success@2A changes from `{baseline.success_at_2a:.1f}%` to `{frame_backbone.success_at_2a:.1f}%`.",
                 f"- The improvement is not free: the heterogeneous frame-based backbone is roughly `{speed_multiplier:.2f}x` slower in mean training time.",
-                "- This is still a small-sample comparison with one seed per complex, so it strengthens the project narrative but does not justify benchmark-scale claims.",
+                "- This is still a small-sample comparison, so it strengthens the project narrative but does not justify benchmark-scale claims.",
                 "",
                 "## Source Logs",
                 "",
@@ -390,9 +484,41 @@ def write_markdown(path: Path, records: list[ExperimentRecord], means: list[dict
         )
 
     for record in records:
-        lines.append(f"- `{record.complex_id}` {record.model}: `{record.log_path.as_posix()}`")
+        lines.append(
+            f"- `{record.complex_id}` {record.model} seed `{record.seed}` ({record.noise_schedule}): "
+            f"`{record.log_path.as_posix()}`"
+        )
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_latex(path: Path, means: list[SummaryRow], *, group_by: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "\\begin{tabular}{llrrrrrrr}",
+        "\\toprule",
+        "Model & Schedule & Complexes & Runs & Mean Raw RMSE & Std Raw RMSE & Mean Aligned RMSD & Success@2\\AA{} & Success@5\\AA{} \\\\",
+        "\\midrule",
+    ]
+    for row in means:
+        schedule_label = row.noise_schedule if group_by == "model_schedule" else "-"
+        lines.append(
+            f"{_latex_escape(row.model)} & {_latex_escape(schedule_label or '-')} & "
+            f"{row.complexes} & {row.runs} & {row.mean_raw_ligand_rmse:.6f} & "
+            f"{row.std_raw_ligand_rmse:.6f} & {row.mean_aligned_ligand_rmsd:.6f} & "
+            f"{row.success_at_2a:.1f}\\% & {row.success_at_5a:.1f}\\% \\\\"
+        )
+    lines.extend(
+        [
+            "\\bottomrule",
+            "\\end{tabular}",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _latex_escape(value: str) -> str:
+    return value.replace("&", "\\&").replace("%", "\\%").replace("_", "\\_")
 
 
 def percent_reduction(baseline: float, improved: float) -> float:
@@ -422,11 +548,15 @@ def main() -> int:
         )
     if not records:
         raise ValueError(f"No comparable experiment logs found for pattern {args.log_glob!r}.")
-    means = grouped_means(records)
+    means = grouped_means(records, group_by=args.group_by)
     write_csv(args.output_csv, records)
-    write_markdown(args.output_markdown, records, means)
+    write_markdown(args.output_markdown, records, means, group_by=args.group_by)
+    if args.output_latex is not None:
+        write_latex(args.output_latex, means, group_by=args.group_by)
     print(f"markdown_path={args.output_markdown}")
     print(f"csv_path={args.output_csv}")
+    if args.output_latex is not None:
+        print(f"latex_path={args.output_latex}")
     return 0
 
 
