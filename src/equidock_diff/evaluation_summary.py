@@ -8,16 +8,20 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from equidock_diff.data.io import load_split_complex_ids
+
 
 KV_LINE_RE = re.compile(r"^- (?P<key>[^:]+): `(?P<value>.*)`$")
 FINAL_LOSS_RE = re.compile(r"^- Final loss: `(?P<loss>[^`]+)` at step `(?P<step>[^`]+)`$")
 PROTEIN_PATH_RE = re.compile(r"/(?P<complex_id>[^/]+)/(?P=complex_id)_protein\.pdb")
+PRIMARY_MODELS = ("EGNN baseline", "heterogeneous frame-based backbone")
 
 
 @dataclass(frozen=True)
 class ExperimentRecord:
     complex_id: str
     model: str
+    seed: int
     log_path: Path
     command: str
     graph_source: str
@@ -59,6 +63,32 @@ def build_parser() -> argparse.ArgumentParser:
         default="primary",
         help="Whether to summarize only the baseline/final comparison or all discovered model variants",
     )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Optional text file listing the complex ids to include in canonical summaries",
+    )
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="Fail if any expected complex/model/seed combination is missing after selection",
+    )
+    parser.add_argument(
+        "--expected-model",
+        dest="expected_models",
+        action="append",
+        default=None,
+        help="Model label expected for each manifest complex; may be passed multiple times",
+    )
+    parser.add_argument(
+        "--expected-seed",
+        dest="expected_seeds",
+        type=int,
+        action="append",
+        default=None,
+        help="Seed expected for each manifest complex; may be passed multiple times",
+    )
     return parser
 
 
@@ -87,6 +117,7 @@ def parse_experiment_log(path: Path) -> ExperimentRecord:
     return ExperimentRecord(
         complex_id=complex_id,
         model=model,
+        seed=int(values.get("Seed", "42")),
         log_path=path,
         command=command,
         graph_source=values.get("Graph source", ""),
@@ -140,16 +171,36 @@ def discover_records(pattern: str) -> list[ExperimentRecord]:
     ]
 
 
+def filter_records_by_manifest(
+    records: list[ExperimentRecord],
+    manifest_complex_ids: list[str] | None,
+) -> list[ExperimentRecord]:
+    if manifest_complex_ids is None:
+        return records
+
+    expected = set(manifest_complex_ids)
+    filtered = [record for record in records if record.complex_id in expected]
+    return sorted(
+        filtered,
+        key=lambda item: (
+            manifest_complex_ids.index(item.complex_id),
+            item.model,
+            item.seed,
+            item.log_path.as_posix(),
+        ),
+    )
+
+
 def select_records(records: list[ExperimentRecord], *, models: str) -> list[ExperimentRecord]:
-    preferred_models = {"EGNN baseline", "heterogeneous frame-based backbone"}
-    deduped: dict[tuple[str, str], ExperimentRecord] = {}
+    preferred_models = set(PRIMARY_MODELS)
+    deduped: dict[tuple[str, str, int], ExperimentRecord] = {}
     for record in records:
         if models == "primary" and record.model not in preferred_models:
             continue
-        current = deduped.get((record.complex_id, record.model))
+        current = deduped.get((record.complex_id, record.model, record.seed))
         if current is None or _record_priority(record) < _record_priority(current):
-            deduped[(record.complex_id, record.model)] = record
-    return sorted(deduped.values(), key=lambda item: (item.complex_id, item.model))
+            deduped[(record.complex_id, record.model, record.seed)] = record
+    return sorted(deduped.values(), key=lambda item: (item.complex_id, item.model, item.seed))
 
 
 def _record_priority(
@@ -165,6 +216,49 @@ def _record_priority(
         1 if "real_experiment" in name else 0,
         len(name),
     )
+
+
+def resolve_expected_models(
+    *,
+    models: str,
+    expected_models: list[str] | None,
+) -> list[str]:
+    if expected_models:
+        return expected_models
+    if models == "primary":
+        return list(PRIMARY_MODELS)
+    return []
+
+
+def resolve_expected_seeds(expected_seeds: list[int] | None) -> list[int]:
+    return [int(seed) for seed in expected_seeds] if expected_seeds else [42]
+
+
+def assert_expected_combinations_present(
+    records: list[ExperimentRecord],
+    *,
+    manifest_complex_ids: list[str] | None,
+    expected_models: list[str],
+    expected_seeds: list[int],
+) -> None:
+    if manifest_complex_ids is None:
+        raise ValueError("--require-complete requires --manifest.")
+
+    present = {
+        (record.complex_id, record.model, record.seed)
+        for record in records
+    }
+    missing: list[str] = []
+    for complex_id in manifest_complex_ids:
+        for model in expected_models:
+            for seed in expected_seeds:
+                key = (complex_id, model, seed)
+                if key not in present:
+                    missing.append(f"{complex_id}/{model}/seed={seed}")
+
+    if missing:
+        preview = ", ".join(missing[:8])
+        raise ValueError(f"Missing expected experiment logs: {preview}")
 
 
 def grouped_means(records: list[ExperimentRecord]) -> list[dict[str, float | str]]:
@@ -309,7 +403,23 @@ def percent_reduction(baseline: float, improved: float) -> float:
 
 def main() -> int:
     args = build_parser().parse_args()
-    records = select_records(discover_records(args.log_glob), models=args.models)
+    manifest_complex_ids = None
+    if args.manifest is not None:
+        manifest_complex_ids = load_split_complex_ids(args.manifest)
+
+    records = discover_records(args.log_glob)
+    records = filter_records_by_manifest(records, manifest_complex_ids)
+    records = select_records(records, models=args.models)
+    if args.require_complete:
+        assert_expected_combinations_present(
+            records,
+            manifest_complex_ids=manifest_complex_ids,
+            expected_models=resolve_expected_models(
+                models=args.models,
+                expected_models=args.expected_models,
+            ),
+            expected_seeds=resolve_expected_seeds(args.expected_seeds),
+        )
     if not records:
         raise ValueError(f"No comparable experiment logs found for pattern {args.log_glob!r}.")
     means = grouped_means(records)
