@@ -11,11 +11,14 @@ from equidock_diff.evaluation_summary import (
     filter_records_by_manifest,
     grouped_means,
     infer_model,
+    infer_noise_schedule,
     parse_experiment_log,
     percent_reduction,
     resolve_expected_models,
     resolve_expected_seeds,
     select_records,
+    success_rate,
+    write_latex,
 )
 
 
@@ -60,6 +63,7 @@ def test_parse_experiment_log_extracts_metrics(tmp_path: Path) -> None:
     assert record.complex_id == "10gs"
     assert record.model == "heterogeneous frame-based backbone"
     assert record.seed == 42
+    assert record.noise_schedule == "linear"
     assert record.graph_source == "real_pair"
     assert record.final_loss == 0.061780
     assert record.best_loss == 0.039261
@@ -72,6 +76,7 @@ def test_select_records_prefers_non_rerun_logs() -> None:
         complex_id="10gs",
         model="heterogeneous frame-based backbone",
         seed=42,
+        noise_schedule="linear",
         log_path=Path("docs/training/10gs_hetgnn_compare_log.md"),
         command="",
         graph_source="real_pair",
@@ -89,6 +94,7 @@ def test_select_records_prefers_non_rerun_logs() -> None:
         complex_id="10gs",
         model="heterogeneous frame-based backbone",
         seed=42,
+        noise_schedule="linear",
         log_path=Path("docs/training/10gs_hetgnn_compare_rerun_log.md"),
         command="",
         graph_source="real_pair",
@@ -113,6 +119,7 @@ def test_select_records_prefers_full_runs_over_repro_checks() -> None:
         complex_id="10gs",
         model="EGNN baseline",
         seed=42,
+        noise_schedule="linear",
         log_path=Path("docs/training/10gs_repro_check_log.md"),
         command="",
         graph_source="real_pair",
@@ -130,6 +137,7 @@ def test_select_records_prefers_full_runs_over_repro_checks() -> None:
         complex_id="10gs",
         model="EGNN baseline",
         seed=42,
+        noise_schedule="linear",
         log_path=Path("docs/training/10gs_hetgnn_compare_baseline_log.md"),
         command="",
         graph_source="real_pair",
@@ -155,6 +163,7 @@ def test_grouped_means_and_percent_reduction() -> None:
             complex_id="10gs",
             model="EGNN baseline",
             seed=42,
+            noise_schedule="linear",
             log_path=Path("a"),
             command="",
             graph_source="real_pair",
@@ -172,6 +181,7 @@ def test_grouped_means_and_percent_reduction() -> None:
             complex_id="11gs",
             model="heterogeneous frame-based backbone",
             seed=42,
+            noise_schedule="linear",
             log_path=Path("b"),
             command="",
             graph_source="real_pair",
@@ -189,13 +199,14 @@ def test_grouped_means_and_percent_reduction() -> None:
 
     means = grouped_means(records)
 
-    baseline = next(row for row in means if row["model"] == "EGNN baseline")
+    baseline = next(row for row in means if row.model == "EGNN baseline")
     frame_backbone = next(
-        row for row in means if row["model"] == "heterogeneous frame-based backbone"
+        row for row in means if row.model == "heterogeneous frame-based backbone"
     )
 
-    assert float(baseline["mean_raw_ligand_rmse"]) == 3.0
-    assert float(frame_backbone["mean_aligned_ligand_rmsd"]) == 1.0
+    assert baseline.mean_raw_ligand_rmse == 3.0
+    assert frame_backbone.mean_aligned_ligand_rmsd == 1.0
+    assert baseline.success_at_2a == 100.0
     assert percent_reduction(3.0, 1.5) == 50.0
 
 
@@ -260,6 +271,7 @@ def test_filter_records_by_manifest_preserves_manifest_order() -> None:
             complex_id="10gs",
             model="EGNN baseline",
             seed=42,
+            noise_schedule="linear",
             log_path=Path("10gs_log.md"),
             command="",
             graph_source="real_pair",
@@ -277,6 +289,7 @@ def test_filter_records_by_manifest_preserves_manifest_order() -> None:
             complex_id="11gs",
             model="EGNN baseline",
             seed=42,
+            noise_schedule="linear",
             log_path=Path("11gs_log.md"),
             command="",
             graph_source="real_pair",
@@ -303,6 +316,7 @@ def test_assert_expected_combinations_present_checks_models_and_seeds() -> None:
             complex_id="10gs",
             model="EGNN baseline",
             seed=42,
+            noise_schedule="linear",
             log_path=Path("10gs_baseline_log.md"),
             command="",
             graph_source="real_pair",
@@ -335,3 +349,69 @@ def test_resolve_expected_models_and_seeds_defaults() -> None:
     assert resolve_expected_models(models="all", expected_models=None) == []
     assert resolve_expected_seeds(None) == [42]
     assert resolve_expected_seeds([43, 44]) == [43, 44]
+
+
+def test_infer_noise_schedule_detects_cosine_flag() -> None:
+    assert infer_noise_schedule("uv run python -m equidock_diff.train") == "linear"
+    assert (
+        infer_noise_schedule("uv run python -m equidock_diff.train --noise-schedule cosine")
+        == "cosine"
+    )
+
+
+def test_grouped_means_supports_schedule_split_and_success_rates(tmp_path: Path) -> None:
+    records = [
+        ExperimentRecord(
+            complex_id="10gs",
+            model="EGNN baseline",
+            seed=42,
+            noise_schedule="linear",
+            log_path=Path("linear_a.md"),
+            command="",
+            graph_source="real_pair",
+            training_steps=100,
+            sample_steps=25,
+            node_count=1,
+            edge_count=1,
+            best_loss=0.1,
+            final_loss=0.2,
+            training_seconds=2.0,
+            raw_ligand_rmse=3.0,
+            aligned_ligand_rmsd=1.5,
+        ),
+        ExperimentRecord(
+            complex_id="11gs",
+            model="EGNN baseline",
+            seed=43,
+            noise_schedule="cosine",
+            log_path=Path("cosine_a.md"),
+            command="",
+            graph_source="real_pair",
+            training_steps=100,
+            sample_steps=25,
+            node_count=1,
+            edge_count=1,
+            best_loss=0.2,
+            final_loss=0.3,
+            training_seconds=3.0,
+            raw_ligand_rmse=4.0,
+            aligned_ligand_rmsd=5.5,
+        ),
+    ]
+
+    means = grouped_means(records, group_by="model_schedule")
+
+    linear = next(row for row in means if row.noise_schedule == "linear")
+    cosine = next(row for row in means if row.noise_schedule == "cosine")
+
+    assert linear.success_at_2a == 100.0
+    assert linear.success_at_5a == 100.0
+    assert cosine.success_at_2a == 0.0
+    assert cosine.success_at_5a == 0.0
+    assert success_rate([1.5, 5.5], 5.0) == 50.0
+
+    latex_path = tmp_path / "summary.tex"
+    write_latex(latex_path, means, group_by="model_schedule")
+    latex = latex_path.read_text(encoding="utf-8")
+    assert "Success@2\\AA{}" in latex
+    assert "cosine" in latex
