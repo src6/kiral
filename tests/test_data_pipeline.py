@@ -70,7 +70,9 @@ def test_build_graph_batch_centers_ligand_and_crops_far_protein() -> None:
     assert batch.node_features.shape == (3, 17)
     assert batch.positions.shape == (3, 3)
     assert batch.edge_index.shape[0] == 2
+    assert batch.crop_mask is not None
     assert batch.mask is not None
+    assert torch.equal(batch.crop_mask, batch.mask)
     assert int(batch.mask.sum().item()) == 3
     assert torch.allclose(batch.positions[:2].mean(dim=0), torch.zeros(3), atol=1e-6)
     assert batch.node_features[:2, -1].tolist() == [1.0, 1.0]
@@ -107,6 +109,7 @@ def test_build_graph_batch_is_translation_consistent() -> None:
         cutoff=8.0,
     )
 
+    assert torch.equal(batch.crop_mask, translated_batch.crop_mask)
     assert torch.equal(batch.mask, translated_batch.mask)
     assert torch.equal(batch.edge_index, translated_batch.edge_index)
     assert torch.allclose(batch.node_features, translated_batch.node_features)
@@ -167,6 +170,7 @@ def test_load_protein_ligand_graph_from_files(tmp_path: Path) -> None:
 
     assert batch.node_features.shape[1] == 17
     assert batch.positions.shape[1] == 3
+    assert batch.crop_mask is not None
     assert batch.mask is not None
     assert int(batch.mask.sum().item()) >= 4
     ligand_count = int(batch.node_features[:, -1].sum().item())
@@ -252,6 +256,7 @@ def test_load_protein_ligand_graph_cached_reuses_saved_graph(tmp_path: Path) -> 
     assert len(list(cache_dir.glob("*.pt"))) == 1
     assert torch.equal(first_batch.node_features, second_batch.node_features)
     assert torch.equal(first_batch.edge_index, second_batch.edge_index)
+    assert torch.equal(first_batch.crop_mask, second_batch.crop_mask)
     assert torch.allclose(first_batch.positions, second_batch.positions)
 
 
