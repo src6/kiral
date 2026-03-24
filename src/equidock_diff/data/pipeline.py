@@ -21,8 +21,13 @@ class GraphBatch:
     node_features: torch.Tensor
     positions: torch.Tensor
     edge_index: torch.Tensor
-    mask: torch.Tensor | None = None
+    crop_mask: torch.Tensor | None = None
     ligand_bond_index: torch.Tensor | None = None
+
+    @property
+    def mask(self) -> torch.Tensor | None:
+        """Compatibility alias for the original crop-mask field name."""
+        return self.crop_mask
 
 
 GRAPH_CACHE_FORMAT_VERSION = 1
@@ -120,7 +125,7 @@ def move_graph_batch(batch: GraphBatch, device: torch.device) -> GraphBatch:
         node_features=batch.node_features.to(device),
         positions=batch.positions.to(device),
         edge_index=batch.edge_index.to(device),
-        mask=None if batch.mask is None else batch.mask.to(device),
+        crop_mask=None if batch.crop_mask is None else batch.crop_mask.to(device),
         ligand_bond_index=None
         if batch.ligand_bond_index is None
         else batch.ligand_bond_index.to(device),
@@ -168,7 +173,7 @@ def _serialize_graph_batch(batch: GraphBatch) -> dict[str, object]:
         "node_features": cpu_batch.node_features,
         "positions": cpu_batch.positions,
         "edge_index": cpu_batch.edge_index,
-        "mask": cpu_batch.mask,
+        "crop_mask": cpu_batch.crop_mask,
         "ligand_bond_index": cpu_batch.ligand_bond_index,
     }
 
@@ -183,7 +188,7 @@ def _deserialize_graph_batch(payload: dict[str, object]) -> GraphBatch:
         node_features=payload["node_features"],  # type: ignore[arg-type]
         positions=payload["positions"],  # type: ignore[arg-type]
         edge_index=payload["edge_index"],  # type: ignore[arg-type]
-        mask=payload.get("mask"),  # type: ignore[arg-type]
+        crop_mask=payload.get("crop_mask", payload.get("mask")),  # type: ignore[arg-type]
         ligand_bond_index=payload.get("ligand_bond_index"),  # type: ignore[arg-type]
     )
 
@@ -282,7 +287,7 @@ def build_graph_batch(
         node_features=x[final_mask],
         positions=centered_pos[final_mask],
         edge_index=new_edge_index,
-        mask=final_mask,  # Original-node mask retained for debugging/tests.
+        crop_mask=final_mask,  # Original-node crop mask retained for debugging/tests.
         ligand_bond_index=remapped_ligand_bond_index,
     )
 
