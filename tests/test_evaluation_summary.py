@@ -16,6 +16,7 @@ from equidock_diff.evaluation_summary import (
     percent_reduction,
     resolve_expected_models,
     resolve_expected_seeds,
+    resolve_expected_schedules,
     select_records,
     success_rate,
     write_latex,
@@ -155,6 +156,49 @@ def test_select_records_prefers_full_runs_over_repro_checks() -> None:
     records = select_records([repro, full], models="primary")
 
     assert records == [full]
+
+
+def test_select_records_keeps_distinct_schedules_for_same_seed() -> None:
+    linear = ExperimentRecord(
+        complex_id="10gs",
+        model="EGNN baseline",
+        seed=42,
+        noise_schedule="linear",
+        log_path=Path("docs/training/10gs_baseline_linear_log.md"),
+        command="",
+        graph_source="real_pair",
+        training_steps=100,
+        sample_steps=25,
+        node_count=147,
+        edge_count=2992,
+        best_loss=0.09,
+        final_loss=0.69,
+        training_seconds=1.5,
+        raw_ligand_rmse=3.6,
+        aligned_ligand_rmsd=2.6,
+    )
+    cosine = ExperimentRecord(
+        complex_id="10gs",
+        model="EGNN baseline",
+        seed=42,
+        noise_schedule="cosine",
+        log_path=Path("docs/training/10gs_baseline_cosine_log.md"),
+        command="",
+        graph_source="real_pair",
+        training_steps=100,
+        sample_steps=25,
+        node_count=147,
+        edge_count=2992,
+        best_loss=0.08,
+        final_loss=0.40,
+        training_seconds=1.7,
+        raw_ligand_rmse=4.2,
+        aligned_ligand_rmsd=3.8,
+    )
+
+    records = select_records([cosine, linear], models="primary")
+
+    assert records == [cosine, linear]
 
 
 def test_grouped_means_and_percent_reduction() -> None:
@@ -338,6 +382,7 @@ def test_assert_expected_combinations_present_checks_models_and_seeds() -> None:
             manifest_complex_ids=["10gs"],
             expected_models=["EGNN baseline", "heterogeneous frame-based backbone"],
             expected_seeds=[42],
+            expected_schedules=["linear"],
         )
 
 
@@ -349,6 +394,8 @@ def test_resolve_expected_models_and_seeds_defaults() -> None:
     assert resolve_expected_models(models="all", expected_models=None) == []
     assert resolve_expected_seeds(None) == [42]
     assert resolve_expected_seeds([43, 44]) == [43, 44]
+    assert resolve_expected_schedules(None) == ["linear"]
+    assert resolve_expected_schedules(["linear", "cosine"]) == ["linear", "cosine"]
 
 
 def test_infer_noise_schedule_detects_cosine_flag() -> None:
