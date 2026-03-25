@@ -461,4 +461,5 @@ def test_grouped_means_supports_schedule_split_and_success_rates(tmp_path: Path)
     write_latex(latex_path, means, group_by="model_schedule")
     latex = latex_path.read_text(encoding="utf-8")
     assert "Success@2\\AA{}" in latex
+    assert "Mean Train s" in latex
     assert "cosine" in latex
