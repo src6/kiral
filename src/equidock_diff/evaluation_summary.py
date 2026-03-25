@@ -512,9 +512,9 @@ def write_markdown(
 def write_latex(path: Path, means: list[SummaryRow], *, group_by: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "\\begin{tabular}{llrrrrrrr}",
+        "\\begin{tabular}{llrrrrrrrr}",
         "\\toprule",
-        "Model & Schedule & Complexes & Runs & Mean Raw RMSE & Std Raw RMSE & Mean Aligned RMSD & Success@2\\AA{} & Success@5\\AA{} \\\\",
+        "Model & Schedule & Complexes & Runs & Mean Raw RMSE & Std Raw RMSE & Mean Aligned RMSD & Success@2\\AA{} & Success@5\\AA{} & Mean Train s \\\\",
         "\\midrule",
     ]
     for row in means:
@@ -523,7 +523,7 @@ def write_latex(path: Path, means: list[SummaryRow], *, group_by: str) -> None:
             f"{_latex_escape(row.model)} & {_latex_escape(schedule_label or '-')} & "
             f"{row.complexes} & {row.runs} & {row.mean_raw_ligand_rmse:.6f} & "
             f"{row.std_raw_ligand_rmse:.6f} & {row.mean_aligned_ligand_rmsd:.6f} & "
-            f"{row.success_at_2a:.1f}\\% & {row.success_at_5a:.1f}\\% \\\\"
+            f"{row.success_at_2a:.1f}\\% & {row.success_at_5a:.1f}\\% & {row.mean_training_seconds:.3f} \\\\"
         )
     lines.extend(
         [
