@@ -109,6 +109,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seed expected for each manifest complex; may be passed multiple times",
     )
     parser.add_argument(
+        "--expected-schedule",
+        dest="expected_schedules",
+        action="append",
+        default=None,
+        help="Noise schedule expected for each manifest complex/model/seed combination; may be passed multiple times",
+    )
+    parser.add_argument(
         "--output-latex",
         type=Path,
         default=None,
@@ -231,14 +238,18 @@ def filter_records_by_manifest(
 
 def select_records(records: list[ExperimentRecord], *, models: str) -> list[ExperimentRecord]:
     preferred_models = set(PRIMARY_MODELS)
-    deduped: dict[tuple[str, str, int], ExperimentRecord] = {}
+    deduped: dict[tuple[str, str, int, str], ExperimentRecord] = {}
     for record in records:
         if models == "primary" and record.model not in preferred_models:
             continue
-        current = deduped.get((record.complex_id, record.model, record.seed))
+        key = (record.complex_id, record.model, record.seed, record.noise_schedule)
+        current = deduped.get(key)
         if current is None or _record_priority(record) < _record_priority(current):
-            deduped[(record.complex_id, record.model, record.seed)] = record
-    return sorted(deduped.values(), key=lambda item: (item.complex_id, item.model, item.seed))
+            deduped[key] = record
+    return sorted(
+        deduped.values(),
+        key=lambda item: (item.complex_id, item.model, item.seed, item.noise_schedule),
+    )
 
 
 def _record_priority(
@@ -272,27 +283,33 @@ def resolve_expected_seeds(expected_seeds: list[int] | None) -> list[int]:
     return [int(seed) for seed in expected_seeds] if expected_seeds else [42]
 
 
+def resolve_expected_schedules(expected_schedules: list[str] | None) -> list[str]:
+    return list(expected_schedules) if expected_schedules else ["linear"]
+
+
 def assert_expected_combinations_present(
     records: list[ExperimentRecord],
     *,
     manifest_complex_ids: list[str] | None,
     expected_models: list[str],
     expected_seeds: list[int],
+    expected_schedules: list[str],
 ) -> None:
     if manifest_complex_ids is None:
         raise ValueError("--require-complete requires --manifest.")
 
     present = {
-        (record.complex_id, record.model, record.seed)
+        (record.complex_id, record.model, record.seed, record.noise_schedule)
         for record in records
     }
     missing: list[str] = []
     for complex_id in manifest_complex_ids:
         for model in expected_models:
             for seed in expected_seeds:
-                key = (complex_id, model, seed)
-                if key not in present:
-                    missing.append(f"{complex_id}/{model}/seed={seed}")
+                for schedule in expected_schedules:
+                    key = (complex_id, model, seed, schedule)
+                    if key not in present:
+                        missing.append(f"{complex_id}/{model}/seed={seed}/schedule={schedule}")
 
     if missing:
         preview = ", ".join(missing[:8])
@@ -545,6 +562,7 @@ def main() -> int:
                 expected_models=args.expected_models,
             ),
             expected_seeds=resolve_expected_seeds(args.expected_seeds),
+            expected_schedules=resolve_expected_schedules(args.expected_schedules),
         )
     if not records:
         raise ValueError(f"No comparable experiment logs found for pattern {args.log_glob!r}.")
