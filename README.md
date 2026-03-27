@@ -13,10 +13,7 @@ Required local tools: Python `3.13+` and `uv`. Project Python dependencies such 
 - `src/equidock_diff/sanity_check.py`: rotation/translation sanity check
 - `src/equidock_diff/evaluation_summary.py`: aggregate experiment logs into report-ready tables
 - `tests/`: unit tests for chemistry, data, diffusion, equivariance, training, and evaluation-summary helpers
-- `docs/design/`: design notes and symmetry assumptions
-- `docs/perf/`: MPS/CPU performance notes and fallbacks
-- `docs/training/`: experiment logs, artifacts, and the canonical `panel20/` evaluation summaries
-- `docs/report.tex`: report source
+- `docs/training/`: curated experiment evidence, including canonical `panel20/` summaries, the checkpoint/resume note, and a small `showcase/` of representative plots
 
 ## Quick Start
 
@@ -25,7 +22,6 @@ uv sync
 uv run --extra test python -m pytest
 uv run python -m equidock_diff.sanity_check --trials 8 --device cpu
 uv run python -m equidock_diff.train --device cpu --steps 20 --sample-steps 10
-uv run python -m equidock_diff.evaluation_summary \
-  --log-glob 'docs/training/panel20/**/*_log.md' \
-  --manifest config/evaluation/dissertation_panel20.txt
 ```
+
+Tracked evaluation summaries are kept under `docs/training/panel20/`, with representative qualitative figures in `docs/training/showcase/`.

@@ -21,14 +21,46 @@ wheels/
 
 # LaTeX build noise
 *.aux
+*.bbl
+*.blg
 *.fdb_latexmk
 *.fls
 *.log
 *.out
 /report.pdf
+/docs/report.pdf
 
-# Hold docs back until finalization
-docs/
+# Local docs and generated artifacts
+docs/.DS_Store
+docs/planning/
+docs/figures/*.png
+docs/report*.tex
+docs/report*.pdf
+docs/report*.bib
+docs/report_rewrite_notes.md
+docs/design/architecture.md
+docs/perf/mps_notes.md
+
+# Training docs: keep only the curated evidence set
+docs/training/**
+!docs/training/
+!docs/training/README.md
+!docs/training/checkpoint_resume.md
+!docs/training/panel20/
+!docs/training/panel20/architecture/
+!docs/training/panel20/architecture/cross_complex_comparison_all.md
+!docs/training/panel20/architecture/cross_complex_comparison_all.csv
+!docs/training/panel20/architecture/cross_complex_comparison_all.tex
+!docs/training/panel20/schedule/
+!docs/training/panel20/schedule/cross_complex_comparison_schedule.md
+!docs/training/panel20/schedule/cross_complex_comparison_schedule.csv
+!docs/training/panel20/schedule/cross_complex_comparison_schedule.tex
+!docs/training/panel20/variance_mps/
+!docs/training/panel20/variance_mps/cross_complex_comparison_variance.md
+!docs/training/panel20/variance_mps/cross_complex_comparison_variance.csv
+!docs/training/panel20/variance_mps/cross_complex_comparison_variance.tex
+!docs/training/showcase/
+!docs/training/showcase/*.png
 PROJECT_SPEC.md
 
 # Large local data archives

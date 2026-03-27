@@ -16,7 +16,7 @@ class ScoreNetConfig:
 
 
 class ScoreNet(nn.Module):
-    """Wrapper for score-based diffusion modeling."""
+    """Wrapper for score-based diffusion modelling."""
 
     def __init__(self, config: ScoreNetConfig) -> None:
         super().__init__()

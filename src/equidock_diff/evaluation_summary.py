@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--models",
         choices=("primary", "all"),
         default="primary",
-        help="Whether to summarize only the baseline/final comparison or all discovered model variants",
+        help="Whether to summarise only the baseline/final comparison or all discovered model variants",
     )
     parser.add_argument(
         "--manifest",
