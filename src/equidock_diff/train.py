@@ -1,4 +1,4 @@
-"""Training entry point for the Equidock-Diff MVP."""
+"""Training entry point for the Equidock-Diff pipeline."""
 
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frame-hetero-backbone",
         action="store_true",
-        help="Use the heterogeneous frame-based SE(3)-equivariant backbone",
+        help="Use the heterogeneous frame-based backbone with local orientation features",
     )
     parser.add_argument(
         "--hetgnn-backbone",
