@@ -19,6 +19,13 @@ wheels/
 # macOS noise
 .DS_Store
 
+# LaTeX build noise
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+/report.pdf
 
 # Hold docs back until finalization
 docs/

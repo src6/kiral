@@ -18,6 +18,40 @@ from equidock_diff.utils.geometry import (
 )
 
 
+def _make_chiral_reflection_fixture() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    node_features = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.2, 1.1, 0.3],
+            [0.5, -0.4, 1.2],
+            [-0.7, 0.6, -0.9],
+            [1.3, 0.8, -0.2],
+        ],
+        dtype=torch.float32,
+    )
+    edge_index = torch.tensor(
+        [
+            [0, 1, 2, 3, 4, 5, 1, 2, 3, 4, 0, 2, 4, 5],
+            [1, 2, 3, 4, 5, 0, 0, 1, 2, 3, 2, 4, 5, 1],
+        ],
+        dtype=torch.long,
+    )
+    reflection = torch.diag(torch.tensor([-1.0, 1.0, 1.0], dtype=torch.float32))
+    return node_features, positions, edge_index, reflection
+
+
 def test_rotation_matrix_shapes() -> None:
     device = torch.device("cpu")
     rot = random_rotation_matrix(3, device=device, dtype=torch.float32)
@@ -189,6 +223,64 @@ def test_egnn_score_is_rotation_equivariant_with_frame_hetero_backbone() -> None
     expected = apply_rigid_transform(base_score, rotation, torch.zeros(3))
 
     assert torch.allclose(transformed_score, expected, atol=1e-4, rtol=1e-4)
+
+
+def test_plain_egnn_score_is_reflection_equivariant() -> None:
+    torch.manual_seed(0)
+    model = EGNNScoreNet(EGNNConfig(node_dim=4, hidden_dim=32, num_layers=2))
+    node_features, positions, edge_index, reflection = _make_chiral_reflection_fixture()
+    time = torch.tensor(0.3)
+
+    base_score = model(node_features, positions, edge_index, time)
+    reflected_positions = apply_rigid_transform(positions, reflection, torch.zeros(3))
+    reflected_score = model(node_features, reflected_positions, edge_index, time)
+    expected = apply_rigid_transform(base_score, reflection, torch.zeros(3))
+
+    assert torch.allclose(reflected_score, expected, atol=1e-4, rtol=1e-4)
+
+
+def test_complete_frame_variant_breaks_reflection_equivariance() -> None:
+    torch.manual_seed(0)
+    model = EGNNScoreNet(
+        EGNNConfig(
+            node_dim=4,
+            hidden_dim=32,
+            num_layers=2,
+            use_complete_frame=True,
+        )
+    )
+    node_features, positions, edge_index, reflection = _make_chiral_reflection_fixture()
+    time = torch.tensor(0.3)
+
+    base_score = model(node_features, positions, edge_index, time)
+    reflected_positions = apply_rigid_transform(positions, reflection, torch.zeros(3))
+    reflected_score = model(node_features, reflected_positions, edge_index, time)
+    expected = apply_rigid_transform(base_score, reflection, torch.zeros(3))
+
+    max_abs_error = torch.max(torch.abs(reflected_score - expected)).item()
+    assert max_abs_error > 1e-2
+
+
+def test_frame_hetero_backbone_breaks_reflection_equivariance() -> None:
+    torch.manual_seed(0)
+    model = EGNNScoreNet(
+        EGNNConfig(
+            node_dim=4,
+            hidden_dim=32,
+            num_layers=2,
+            use_frame_hetero_backbone=True,
+        )
+    )
+    node_features, positions, edge_index, reflection = _make_chiral_reflection_fixture()
+    time = torch.tensor(0.3)
+
+    base_score = model(node_features, positions, edge_index, time)
+    reflected_positions = apply_rigid_transform(positions, reflection, torch.zeros(3))
+    reflected_score = model(node_features, reflected_positions, edge_index, time)
+    expected = apply_rigid_transform(base_score, reflection, torch.zeros(3))
+
+    max_abs_error = torch.max(torch.abs(reflected_score - expected)).item()
+    assert max_abs_error > 1e-2
 
 
 def test_aligned_rmsd_is_zero_for_rigidly_transformed_points() -> None:
