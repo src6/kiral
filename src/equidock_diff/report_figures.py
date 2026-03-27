@@ -94,7 +94,7 @@ def write_summary(
                 "",
                 "Suggested report interpretation:",
                 "The short-run loss decreases rapidly from its initial value,",
-                "showing that the optimization path is wired correctly.",
+                "showing that the optimisation path is wired correctly.",
                 "The multi-frame trajectory provides a visual record of the",
                 "reverse diffusion process rather than a claim of docking quality.",
                 "",
