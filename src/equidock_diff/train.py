@@ -453,10 +453,11 @@ def noised_positions_for_schedule(
         cosine_nu=cosine_nu,
     )
     if noise_schedule == "cosine":
-        alpha_t = cosine_signal_amplitude(t, offset=cosine_offset, nu=cosine_nu)
-        sigma_t = torch.sqrt(torch.clamp_min(1.0 - alpha_t**2, 1e-8))
+        alpha_bar_t = cosine_signal_amplitude(t, offset=cosine_offset, nu=cosine_nu)
+        signal_scale = torch.sqrt(torch.clamp(alpha_bar_t, min=0.0, max=1.0))
+        sigma_t = torch.sqrt(torch.clamp_min(1.0 - alpha_bar_t, 1e-8))
         noised_positions = (
-            _expand_schedule_value(alpha_t, clean_positions) * clean_positions
+            _expand_schedule_value(signal_scale, clean_positions) * clean_positions
             + _expand_schedule_value(sigma_t, clean_positions) * torch.randn_like(clean_positions)
         )
         return noised_positions, beta_t

@@ -180,15 +180,25 @@ def infer_complex_id(command: str, path: Path) -> str:
 
 
 def infer_model(command: str) -> str:
+    has_hetero_edges = "--hetero-edges" in command
+    has_complete_frame = "--complete-frame" in command
+    has_ligand_global_node = "--ligand-global-node" in command
+
     if "--hetgnn-backbone" in command or "--frame-hetero-backbone" in command:
         return "heterogeneous frame-based backbone"
-    if "--complete-frame" in command and "--ligand-global-node" in command:
+    if has_hetero_edges and has_complete_frame and has_ligand_global_node:
+        return "EGNN + typed edges + complete frames + ligand context"
+    if has_hetero_edges and has_complete_frame:
+        return "EGNN + typed edges + complete frames"
+    if has_hetero_edges and has_ligand_global_node:
+        return "EGNN + typed edges + ligand context"
+    if has_complete_frame and has_ligand_global_node:
         return "EGNN + complete frames + ligand context"
-    if "--complete-frame" in command:
+    if has_complete_frame:
         return "EGNN + complete frames"
-    if "--ligand-global-node" in command:
+    if has_ligand_global_node:
         return "EGNN + ligand context"
-    if "--hetero-edges" in command:
+    if has_hetero_edges:
         return "EGNN + typed edges"
     return "EGNN baseline"
 

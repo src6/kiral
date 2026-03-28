@@ -146,8 +146,22 @@ def prepare_pdbqt_inputs(
 
 def parse_pdbqt_positions(path: Path) -> torch.Tensor:
     coords: list[list[float]] = []
+    saw_model = False
+    reading_first_model = False
     with path.open("r", encoding="utf-8", errors="ignore") as handle:
         for line in handle:
+            if line.startswith("MODEL"):
+                if coords:
+                    break
+                saw_model = True
+                reading_first_model = True
+                continue
+            if line.startswith("ENDMDL"):
+                if reading_first_model:
+                    break
+                continue
+            if saw_model and not reading_first_model:
+                continue
             if not (line.startswith("ATOM") or line.startswith("HETATM")):
                 continue
             coords.append(

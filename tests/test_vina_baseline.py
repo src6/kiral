@@ -51,6 +51,51 @@ def test_parse_pdbqt_positions_reads_atom_coordinates(tmp_path: Path) -> None:
     assert torch.allclose(positions[0], torch.tensor([1.0, 2.0, 3.0]))
 
 
+def test_parse_pdbqt_positions_uses_first_model_when_multiple_poses_exist(tmp_path: Path) -> None:
+    path = tmp_path / "multi_pose.pdbqt"
+    path.write_text(
+        "\n".join(
+            [
+                "MODEL        1",
+                "ATOM      1  C1  LIG A   1       1.000   2.000   3.000  1.00  0.00      A    C",
+                "ENDMDL",
+                "MODEL        2",
+                "ATOM      1  C1  LIG A   1       9.000   8.000   7.000  1.00  0.00      A    C",
+                "ENDMDL",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    positions = parse_pdbqt_positions(path)
+
+    assert positions.shape == (1, 3)
+    assert torch.allclose(positions[0], torch.tensor([1.0, 2.0, 3.0]))
+
+
+def test_parse_pdbqt_positions_preserves_single_pose_files_without_model_records(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "single_pose_no_model.pdbqt"
+    path.write_text(
+        "\n".join(
+            [
+                "REMARK  single-pose output",
+                "ATOM      1  C1  LIG A   1       4.000   5.000   6.000  1.00  0.00      A    C",
+                "ATOM      2  O1  LIG A   1       7.000   8.000   9.000  1.00  0.00      A    O",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    positions = parse_pdbqt_positions(path)
+
+    assert positions.shape == (2, 3)
+    assert torch.allclose(positions[1], torch.tensor([7.0, 8.0, 9.0]))
+
+
 def test_evaluate_docked_pose_returns_zero_for_identical_inputs() -> None:
     positions = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.float32)
 
