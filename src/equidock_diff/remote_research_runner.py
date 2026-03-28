@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -14,6 +15,9 @@ from equidock_diff.data.io import load_split_complex_ids
 DEFAULT_LOCAL_REMOTE_ROOT = Path("runs/remote")
 DEFAULT_REMOTE_RESEARCH_ROOT = PurePosixPath("runs/research")
 IGNORED_LOCAL_STATUS_PATHS = (".mplconfig/",)
+DEFAULT_REMOTE_PING_ATTEMPTS = 3
+DEFAULT_REMOTE_PING_DELAY_SECONDS = 5.0
+DEFAULT_REMOTE_CAFFEINATE_SECONDS = 6 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--fetch-full-results",
         action="store_true",
         help="Fetch the whole remote tag directory instead of only compact summaries",
+    )
+    parser.add_argument(
+        "--remote-ping-attempts",
+        type=int,
+        default=DEFAULT_REMOTE_PING_ATTEMPTS,
+        help="Number of SSH responsiveness checks before remote sync/run steps",
+    )
+    parser.add_argument(
+        "--remote-ping-delay-seconds",
+        type=float,
+        default=DEFAULT_REMOTE_PING_DELAY_SECONDS,
+        help="Delay between remote responsiveness checks",
+    )
+    parser.add_argument(
+        "--allow-remote-sleep",
+        action="store_true",
+        help="Do not use caffeinate on the remote host during sync/setup/run steps",
+    )
+    parser.add_argument(
+        "--remote-caffeinate-seconds",
+        type=int,
+        default=DEFAULT_REMOTE_CAFFEINATE_SECONDS,
+        help="How long to keep the remote host awake when caffeinate is enabled",
     )
     return parser
 
@@ -361,18 +388,71 @@ def build_remote_runner_command(args: argparse.Namespace) -> str:
     )
 
 
-def _run_subprocess(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def _run_subprocess(
+    argv: list[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
         argv,
         cwd=cwd,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if check and completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        stdout = completed.stdout.strip()
+        details: list[str] = [f"Command failed with exit code {completed.returncode}: {' '.join(argv)}"]
+        if stdout:
+            details.append(f"stdout:\n{stdout}")
+        if stderr:
+            details.append(f"stderr:\n{stderr}")
+        raise subprocess.CalledProcessError(
+            completed.returncode,
+            argv,
+            output=completed.stdout,
+            stderr=completed.stderr,
+        ) from RuntimeError("\n\n".join(details))
+    return completed
 
 
 def run_remote_shell(remote_host: str, command: str) -> subprocess.CompletedProcess[str]:
     return _run_subprocess(["ssh", remote_host, command])
+
+
+def maybe_start_remote_caffeinate(args: argparse.Namespace) -> None:
+    if args.allow_remote_sleep:
+        return
+    run_remote_shell(
+        args.remote_host,
+        (
+            "nohup caffeinate -dimsu -t "
+            f"{int(args.remote_caffeinate_seconds)} >/tmp/equidock_diff_caffeinate.log 2>&1 </dev/null &"
+        ),
+    )
+
+
+def ensure_remote_host_responsive(
+    remote_host: str,
+    *,
+    attempts: int,
+    delay_seconds: float,
+) -> None:
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            run_remote_shell(remote_host, "printf ready")
+            return
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(max(0.0, delay_seconds))
+    if last_error is not None:
+        raise RuntimeError(
+            f"Remote host {remote_host} did not become responsive after {attempts} attempts."
+        ) from last_error
 
 
 def ensure_remote_repo_exists(remote_host: str, remote_repo: PurePosixPath) -> None:
@@ -387,6 +467,7 @@ def sync_remote_repo(
     git_state: GitSyncState,
 ) -> None:
     ensure_remote_repo_exists(args.remote_host, args.remote_repo)
+    maybe_start_remote_caffeinate(args)
     if mode == "git":
         if git_state.branch is None or git_state.upstream is None:
             raise ValueError("git sync requires a local branch with an upstream.")
@@ -483,11 +564,33 @@ def main(argv: list[str] | None = None) -> int:
     git_state = local_git_sync_state(repo_root)
     sync_mode = resolve_sync_mode(args.sync_mode, git_state)
 
+    ensure_remote_host_responsive(
+        args.remote_host,
+        attempts=args.remote_ping_attempts,
+        delay_seconds=args.remote_ping_delay_seconds,
+    )
     sync_remote_repo(repo_root, args, mode=sync_mode, git_state=git_state)
     dataset_command = build_remote_dataset_setup_command(args.remote_repo, args.remote_dataset_target)
     if dataset_command is not None:
+        ensure_remote_host_responsive(
+            args.remote_host,
+            attempts=args.remote_ping_attempts,
+            delay_seconds=args.remote_ping_delay_seconds,
+        )
+        maybe_start_remote_caffeinate(args)
         run_remote_shell(args.remote_host, dataset_command)
+    ensure_remote_host_responsive(
+        args.remote_host,
+        attempts=args.remote_ping_attempts,
+        delay_seconds=args.remote_ping_delay_seconds,
+    )
+    maybe_start_remote_caffeinate(args)
     run_remote_shell(args.remote_host, build_remote_runner_command(args))
+    ensure_remote_host_responsive(
+        args.remote_host,
+        attempts=args.remote_ping_attempts,
+        delay_seconds=args.remote_ping_delay_seconds,
+    )
     fetched_root = fetch_remote_results(args)
 
     print(f"remote_sync_mode={sync_mode}")
