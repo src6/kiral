@@ -17,6 +17,7 @@ from equidock_diff.train import (
     build_synthetic_graph,
     dataset_example_for_step,
     ligand_bond_length_loss,
+    ligand_protein_clash_loss,
     ligand_shape_loss,
     load_checkpoint,
     load_graph_inputs,
@@ -41,6 +42,7 @@ class _Args:
     learning_rate = 1e-3
     ligand_bond_weight = 0.0
     ligand_shape_weight = 0.0
+    ligand_protein_clash_weight = 0.0
     beta_min = 0.1
     beta_max = 2.0
     noise_schedule = "linear"
@@ -409,7 +411,7 @@ def test_checkpoint_round_trip_restores_training_state(tmp_path: Path) -> None:
     node_features, positions, edge_index = build_synthetic_graph(args.num_nodes, 1, device)
 
     optimizer.zero_grad(set_to_none=True)
-    loss, beta_t, _, _, _ = training_step_with_breakdown(
+    loss, beta_t, _, _, _, _ = training_step_with_breakdown(
         model,
         node_features,
         positions,
@@ -419,6 +421,7 @@ def test_checkpoint_round_trip_restores_training_state(tmp_path: Path) -> None:
         args.beta_max,
         ligand_bond_weight=args.ligand_bond_weight,
         ligand_shape_weight=args.ligand_shape_weight,
+        ligand_protein_clash_weight=args.ligand_protein_clash_weight,
         frame_hetero_backbone=args.frame_hetero_backbone,
     )
     loss.backward()
@@ -586,7 +589,7 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
     model = make_model(_SampleArgs(), device, node_dim=node_features.shape[1])
     bond_index = torch.tensor([[0, 1, 1, 0], [1, 0, 0, 1]], dtype=torch.long, device=device)
 
-    loss, beta_t, score_loss, bond_loss, shape_loss = training_step_with_breakdown(
+    loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss = training_step_with_breakdown(
         model,
         node_features,
         positions,
@@ -596,6 +599,7 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
         beta_max=2.0,
         ligand_bond_weight=0.5,
         ligand_shape_weight=0.25,
+        ligand_protein_clash_weight=0.0,
         frame_hetero_backbone=False,
     )
 
@@ -603,6 +607,92 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
     assert torch.isfinite(score_loss)
     assert torch.isfinite(bond_loss)
     assert torch.isfinite(shape_loss)
+    assert torch.isfinite(clash_loss)
+    assert beta_t > 0.0
+
+
+def test_ligand_protein_clash_loss_is_zero_when_pairs_are_separated() -> None:
+    predicted_positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    node_features = torch.zeros((2, 17), dtype=torch.float32)
+    node_features[0, 0] = 1.0
+    node_features[1, 0] = 1.0
+    ligand_mask = torch.tensor([True, False], dtype=torch.bool)
+
+    loss = ligand_protein_clash_loss(predicted_positions, node_features, ligand_mask)
+
+    assert loss.item() == pytest.approx(0.0)
+
+
+def test_ligand_protein_clash_loss_is_positive_for_overlapping_pairs() -> None:
+    predicted_positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    node_features = torch.zeros((2, 17), dtype=torch.float32)
+    node_features[0, 0] = 1.0
+    node_features[1, 0] = 1.0
+    ligand_mask = torch.tensor([True, False], dtype=torch.bool)
+
+    loss = ligand_protein_clash_loss(predicted_positions, node_features, ligand_mask)
+
+    assert loss.item() > 0.0
+
+
+def test_training_step_with_clash_breakdown_is_finite() -> None:
+    class _FrameArgs(_Args):
+        frame_hetero_backbone = True
+
+    device = torch.device("cpu")
+    node_features = torch.zeros((4, 17), device=device)
+    node_features[:2, 0] = 1.0
+    node_features[2:, 0] = 1.0
+    node_features[:2, -1] = 1.0
+    positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.5, 0.0, 0.0],
+            [0.8, 0.0, 0.0],
+            [2.5, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+    edge_index = torch.tensor(
+        [[0, 0, 1, 1, 2, 2, 3, 3], [2, 3, 2, 3, 0, 1, 0, 1]],
+        dtype=torch.long,
+        device=device,
+    )
+    model = make_model(_FrameArgs(), device, node_dim=node_features.shape[1])
+    bond_index = torch.tensor([[0, 1, 1, 0], [1, 0, 0, 1]], dtype=torch.long, device=device)
+
+    loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss = training_step_with_breakdown(
+        model,
+        node_features,
+        positions,
+        edge_index,
+        bond_index,
+        beta_min=0.1,
+        beta_max=2.0,
+        ligand_bond_weight=0.1,
+        ligand_shape_weight=0.1,
+        ligand_protein_clash_weight=0.1,
+        frame_hetero_backbone=True,
+    )
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(score_loss)
+    assert torch.isfinite(bond_loss)
+    assert torch.isfinite(shape_loss)
+    assert torch.isfinite(clash_loss)
     assert beta_t > 0.0
 
 
