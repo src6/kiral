@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import torch
+
+
+def ensure_mplconfigdir() -> Path:
+    existing = os.environ.get("MPLCONFIGDIR")
+    if existing:
+        path = Path(existing)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    path = Path(".mplconfig")
+    path.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(path)
+    return path
 
 
 def maybe_write_plot(
@@ -11,6 +24,7 @@ def maybe_write_plot(
     losses: list[tuple[int, float, float]],
 ) -> bool:
     try:
+        ensure_mplconfigdir()
         import matplotlib.pyplot as plt  # type: ignore
     except Exception:
         return False

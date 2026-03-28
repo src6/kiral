@@ -154,6 +154,12 @@ def test_research_gate_reports_best_per_complex_and_writes_outputs(
             str(summary_md),
             "--output-csv",
             str(comparison_csv),
+            "--max-mean-raw-rmse-delta",
+            "0.1",
+            "--max-mean-aligned-rmsd-delta",
+            "0.0",
+            "--min-aligned-improved",
+            "1",
         ]
     )
 
@@ -163,6 +169,11 @@ def test_research_gate_reports_best_per_complex_and_writes_outputs(
     assert "mean_raw_ligand_rmse_delta=0.050000" in stdout
     assert "mean_aligned_ligand_rmsd_delta=-0.075000" in stdout
     assert "aligned_improved_complexes=1/2" in stdout
+    assert "gate_pass=yes" in stdout
+    assert "gate_check_max_mean_raw_rmse_delta=pass" in stdout
+    assert "gate_check_max_mean_aligned_rmsd_delta=pass" in stdout
+    assert "gate_check_min_aligned_improved=pass" in stdout
     assert "cand10gs_seed42" in summary_md.read_text(encoding="utf-8")
     assert "cand11gs_seed42" in summary_md.read_text(encoding="utf-8")
+    assert "Gate pass: `yes`" in summary_md.read_text(encoding="utf-8")
     assert comparison_csv.exists()

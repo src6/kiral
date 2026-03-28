@@ -11,6 +11,7 @@ from equidock_diff.remote_research_runner import (
     build_remote_git_update_command,
     build_remote_runner_command,
     ensure_remote_host_responsive,
+    fetch_remote_results,
     local_summary_root,
     maybe_start_remote_caffeinate,
     remote_research_root,
@@ -234,3 +235,41 @@ def test_maybe_start_remote_caffeinate_can_be_disabled(monkeypatch: pytest.Monke
     maybe_start_remote_caffeinate(args)
 
     assert commands == []
+
+
+def test_fetch_remote_results_always_fetches_status_csv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    monkeypatch.chdir(repo_root)
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "equidock_diff.remote_research_runner._run_subprocess",
+        lambda argv, cwd=None, check=True: calls.append(argv),
+    )
+    args = build_parser().parse_args(
+        [
+            "--complex-id",
+            "10gs",
+            "--model",
+            "baseline",
+            "--noise-schedule",
+            "linear",
+            "--tag",
+            "probe",
+            "--remote-host",
+            "macmini-tailscale",
+            "--remote-repo",
+            "/Users/sadik/Projects/equidock-diff",
+        ]
+    )
+
+    fetch_remote_results(args)
+
+    fetched_sources = [" ".join(call) for call in calls]
+    assert any("run_index.csv" in call for call in fetched_sources)
+    assert any("run_index.md" in call for call in fetched_sources)
+    assert any("status.csv" in call for call in fetched_sources)
