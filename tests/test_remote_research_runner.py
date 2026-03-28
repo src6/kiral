@@ -74,6 +74,11 @@ def test_build_remote_runner_command_includes_research_args() -> None:
             "0.02",
             "--sample-steps",
             "50",
+            "--max-parallel",
+            "2",
+            "--stagger-seconds",
+            "1.5",
+            "--keep-going",
             "--device-policy",
             "scratch",
             "--tag",
@@ -94,6 +99,9 @@ def test_build_remote_runner_command_includes_research_args() -> None:
     assert "--model frame_backbone" in command
     assert "--noise-schedule cosine" in command
     assert "--ligand-protein-clash-weight 0.02" in command
+    assert "--max-parallel 2" in command
+    assert "--stagger-seconds 1.5" in command
+    assert "--keep-going" in command
     assert "--output-root /Users/sadik/Projects/equidock-diff/runs/research" in command
 
 

@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import csv
 import statistics
+import threading
+import time
 from collections import defaultdict
 from dataclasses import dataclass
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import torch
@@ -76,6 +79,25 @@ class RunSummary:
     raw_ligand_rmse: float | None
     aligned_ligand_rmsd: float | None
     training_seconds: float | None
+
+
+@dataclass(frozen=True)
+class StatusRow:
+    run_name: str
+    complex_id: str
+    model: str
+    seed: int
+    planned_action: str
+    status: str
+    device: str
+    checkpoint_path: Path
+    experiment_log: Path
+    final_action: str | None = None
+    final_loss: float | None = None
+    raw_ligand_rmse: float | None = None
+    aligned_ligand_rmsd: float | None = None
+    training_seconds: float | None = None
+    error: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -185,6 +207,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Expand the matrix and write the planned run table without executing runs",
+    )
+    parser.add_argument(
+        "--max-parallel",
+        type=int,
+        default=1,
+        help="Maximum number of training-signature groups to execute concurrently",
+    )
+    parser.add_argument(
+        "--stagger-seconds",
+        type=float,
+        default=0.0,
+        help="Optional delay between launching parallel groups",
+    )
+    parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="Continue other groups after a group failure instead of failing fast",
     )
     parser.add_argument(
         "--output-root",
@@ -689,6 +728,191 @@ def write_run_index_markdown(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_status_csv(path: Path, statuses: list[StatusRow]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "run_name",
+                "complex_id",
+                "model",
+                "seed",
+                "planned_action",
+                "status",
+                "device",
+                "checkpoint_path",
+                "experiment_log",
+                "final_action",
+                "final_loss",
+                "raw_ligand_rmse",
+                "aligned_ligand_rmsd",
+                "training_seconds",
+                "error",
+            ]
+        )
+        for row in statuses:
+            writer.writerow(
+                [
+                    row.run_name,
+                    row.complex_id,
+                    row.model,
+                    row.seed,
+                    row.planned_action,
+                    row.status,
+                    row.device,
+                    row.checkpoint_path.as_posix(),
+                    row.experiment_log.as_posix(),
+                    "" if row.final_action is None else row.final_action,
+                    "" if row.final_loss is None else f"{row.final_loss:.6f}",
+                    "" if row.raw_ligand_rmse is None else f"{row.raw_ligand_rmse:.6f}",
+                    "" if row.aligned_ligand_rmsd is None else f"{row.aligned_ligand_rmsd:.6f}",
+                    "" if row.training_seconds is None else f"{row.training_seconds:.3f}",
+                    "" if row.error is None else row.error,
+                ]
+            )
+
+
+def _planned_status_row(planned: PlannedRun, *, actual_device: torch.device, status: str) -> StatusRow:
+    return StatusRow(
+        run_name=planned.run_name,
+        complex_id=planned.spec.complex_id,
+        model=RUNNER_MODEL_LABELS[planned.spec.model],
+        seed=planned.spec.seed,
+        planned_action=planned.action,
+        status=status,
+        device=actual_device.type,
+        checkpoint_path=planned.checkpoint_path,
+        experiment_log=planned.log_path,
+    )
+
+
+def _completed_status_row(
+    planned: PlannedRun,
+    *,
+    actual_device: torch.device,
+    final_action: str,
+    summary: RunSummary,
+) -> StatusRow:
+    return StatusRow(
+        run_name=planned.run_name,
+        complex_id=planned.spec.complex_id,
+        model=RUNNER_MODEL_LABELS[planned.spec.model],
+        seed=planned.spec.seed,
+        planned_action=planned.action,
+        status="completed",
+        device=actual_device.type,
+        checkpoint_path=planned.checkpoint_path,
+        experiment_log=planned.log_path,
+        final_action=final_action,
+        final_loss=summary.final_loss,
+        raw_ligand_rmse=summary.raw_ligand_rmse,
+        aligned_ligand_rmsd=summary.aligned_ligand_rmsd,
+        training_seconds=summary.training_seconds,
+    )
+
+
+def _failed_status_row(
+    planned: PlannedRun,
+    *,
+    actual_device: torch.device,
+    error: str,
+) -> StatusRow:
+    row = _planned_status_row(planned, actual_device=actual_device, status="failed")
+    return StatusRow(**{**row.__dict__, "error": error})
+
+
+def _group_planned_runs(planned: list[PlannedRun]) -> list[list[PlannedRun]]:
+    grouped: dict[tuple[object, ...], list[PlannedRun]] = defaultdict(list)
+    for run in planned:
+        grouped[training_signature(run.spec)].append(run)
+    groups = []
+    for signature in sorted(grouped):
+        group = sorted(
+            grouped[signature],
+            key=lambda item: (
+                item.spec.sample_steps,
+                item.spec.sample_time_power,
+                item.spec.sample_score_clip,
+                item.spec.sample_position_clip,
+            ),
+        )
+        groups.append(group)
+    return groups
+
+
+def _execute_group(
+    group: list[PlannedRun],
+    *,
+    requested_device: str,
+    actual_device: torch.device,
+    dataset_cache_dir: Path,
+    save_artifacts: bool,
+    status_path: Path,
+    statuses: dict[str, StatusRow],
+    status_lock: threading.Lock,
+) -> list[RunSummary]:
+    group_summaries: list[RunSummary] = []
+    for run in group:
+        with status_lock:
+            statuses[run.run_name] = _planned_status_row(run, actual_device=actual_device, status="running")
+            write_status_csv(status_path, list(statuses.values()))
+        try:
+            if run.action == "reuse":
+                summary = summarize_run(
+                    run,
+                    action="reuse_existing",
+                    actual_device=actual_device,
+                    save_artifacts=save_artifacts,
+                )
+            elif run.action == "train":
+                result = execute_train(
+                    run,
+                    requested_device=requested_device,
+                    dataset_cache_dir=dataset_cache_dir,
+                    save_artifacts=save_artifacts,
+                )
+                if result != 0:
+                    raise RuntimeError(f"train returned a non-zero status for {run.run_name}")
+                summary = summarize_run(
+                    run,
+                    action="trained_from_scratch",
+                    actual_device=actual_device,
+                    save_artifacts=save_artifacts,
+                )
+            else:
+                if not run.checkpoint_path.exists():
+                    raise ValueError(f"Checkpoint required for resampling does not exist: {run.checkpoint_path}")
+                result = execute_resample(
+                    run,
+                    requested_device=requested_device,
+                    save_artifacts=save_artifacts,
+                )
+                if result != 0:
+                    raise RuntimeError(f"resample returned a non-zero status for {run.run_name}")
+                summary = summarize_run(
+                    run,
+                    action="resampled_from_checkpoint",
+                    actual_device=actual_device,
+                    save_artifacts=save_artifacts,
+                )
+            group_summaries.append(summary)
+            with status_lock:
+                statuses[run.run_name] = _completed_status_row(
+                    run,
+                    actual_device=actual_device,
+                    final_action=summary.action,
+                    summary=summary,
+                )
+                write_status_csv(status_path, list(statuses.values()))
+        except Exception as exc:
+            with status_lock:
+                statuses[run.run_name] = _failed_status_row(run, actual_device=actual_device, error=str(exc))
+                write_status_csv(status_path, list(statuses.values()))
+            raise
+    return group_summaries
+
+
 def run_comparison(
     *,
     current_root: Path,
@@ -727,10 +951,15 @@ def run_comparison(
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.max_parallel < 1:
+        raise ValueError("--max-parallel must be at least 1.")
+    if args.stagger_seconds < 0.0:
+        raise ValueError("--stagger-seconds must be non-negative.")
     requested_device, actual_device = resolve_runner_device(args.device_policy, args.device)
     root = args.output_root / args.tag
     specs = expand_run_specs(args)
     planned = plan_runs(specs, root)
+    status_path = root / "status.csv"
 
     summaries: list[RunSummary] = []
     if args.dry_run:
@@ -738,47 +967,78 @@ def main(argv: list[str] | None = None) -> int:
             summarize_planned_run(run, actual_device=actual_device, save_artifacts=args.save_artifacts)
             for run in planned
         ]
+        write_status_csv(
+            status_path,
+            [_planned_status_row(run, actual_device=actual_device, status="planned") for run in planned],
+        )
     else:
-        for run in planned:
-            if run.action == "reuse":
-                summaries.append(
-                    summarize_run(
-                        run,
-                        action="reuse_existing",
-                        actual_device=actual_device,
-                        save_artifacts=args.save_artifacts,
+        grouped_runs = _group_planned_runs(planned)
+        statuses = {
+            run.run_name: _planned_status_row(run, actual_device=actual_device, status="queued")
+            for run in planned
+        }
+        status_lock = threading.Lock()
+        write_status_csv(status_path, list(statuses.values()))
+        errors: list[Exception] = []
+        if args.max_parallel == 1:
+            for group in grouped_runs:
+                try:
+                    summaries.extend(
+                        _execute_group(
+                            group,
+                            requested_device=requested_device,
+                            actual_device=actual_device,
+                            dataset_cache_dir=args.dataset_cache_dir,
+                            save_artifacts=args.save_artifacts,
+                            status_path=status_path,
+                            statuses=statuses,
+                            status_lock=status_lock,
+                        )
                     )
-                )
-                continue
-            if run.action == "train":
-                result = execute_train(
-                    run,
-                    requested_device=requested_device,
-                    dataset_cache_dir=args.dataset_cache_dir,
-                    save_artifacts=args.save_artifacts,
-                )
-                if result != 0:
-                    raise RuntimeError(f"train returned a non-zero status for {run.run_name}")
-                action = "trained_from_scratch"
-            else:
-                if not run.checkpoint_path.exists():
-                    raise ValueError(f"Checkpoint required for resampling does not exist: {run.checkpoint_path}")
-                result = execute_resample(
-                    run,
-                    requested_device=requested_device,
-                    save_artifacts=args.save_artifacts,
-                )
-                if result != 0:
-                    raise RuntimeError(f"resample returned a non-zero status for {run.run_name}")
-                action = "resampled_from_checkpoint"
-            summaries.append(
-                summarize_run(
-                    run,
-                    action=action,
-                    actual_device=actual_device,
-                    save_artifacts=args.save_artifacts,
-                )
-            )
+                except Exception as exc:
+                    errors.append(exc)
+                    if not args.keep_going:
+                        break
+        else:
+            with ThreadPoolExecutor(max_workers=args.max_parallel) as executor:
+                futures = []
+                for index, group in enumerate(grouped_runs):
+                    future = executor.submit(
+                        _execute_group,
+                        group,
+                        requested_device=requested_device,
+                        actual_device=actual_device,
+                        dataset_cache_dir=args.dataset_cache_dir,
+                        save_artifacts=args.save_artifacts,
+                        status_path=status_path,
+                        statuses=statuses,
+                        status_lock=status_lock,
+                    )
+                    futures.append(future)
+                    if args.stagger_seconds > 0.0 and index != len(grouped_runs) - 1:
+                        time.sleep(args.stagger_seconds)
+                if args.keep_going:
+                    for future in futures:
+                        try:
+                            summaries.extend(future.result())
+                        except Exception as exc:
+                            errors.append(exc)
+                else:
+                    done, not_done = wait(futures, return_when=FIRST_EXCEPTION)
+                    for future in done:
+                        try:
+                            summaries.extend(future.result())
+                        except Exception as exc:
+                            errors.append(exc)
+                    if errors:
+                        for future in not_done:
+                            future.cancel()
+                    else:
+                        for future in not_done:
+                            summaries.extend(future.result())
+        summaries = sorted(summaries, key=lambda item: item.run_name)
+        if errors:
+            raise RuntimeError(str(errors[0]))
 
     summary_csv = root / "run_index.csv"
     summary_md = root / "run_index.md"
@@ -792,6 +1052,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"run_index_csv={summary_csv}")
     print(f"run_index_markdown={summary_md}")
+    print(f"status_csv={status_path}")
 
     if args.compare_against is not None and not args.dry_run:
         comparison_md, comparison_csv = run_comparison(

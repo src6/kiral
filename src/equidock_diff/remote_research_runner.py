@@ -121,6 +121,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fetch heavy pose/trajectory outputs too, not just summaries",
     )
     parser.add_argument(
+        "--max-parallel",
+        type=int,
+        default=1,
+        help="Maximum number of training-signature groups to execute concurrently on the remote host",
+    )
+    parser.add_argument(
+        "--stagger-seconds",
+        type=float,
+        default=0.0,
+        help="Optional delay between launching parallel groups on the remote host",
+    )
+    parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="Continue remote groups after a group failure instead of failing fast",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run the remote research runner in dry-run mode",
@@ -282,6 +299,12 @@ def build_remote_runner_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--compare-against", args.compare_against])
     if args.save_artifacts:
         argv.append("--save-artifacts")
+    if args.max_parallel != 1:
+        argv.extend(["--max-parallel", str(args.max_parallel)])
+    if args.stagger_seconds != 0.0:
+        argv.extend(["--stagger-seconds", str(args.stagger_seconds)])
+    if args.keep_going:
+        argv.append("--keep-going")
     if args.dry_run:
         argv.append("--dry-run")
     for seed in _defaulted(args.seeds):
