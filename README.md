@@ -95,3 +95,27 @@ Research-run behavior:
 - pose, trajectory, and plot artifacts are skipped by default; add `--save-artifacts` when you need them
 
 Use `--dry-run` to inspect the expanded run matrix before spending compute, and `--compare-against <prior-tag>` to generate a diff against an earlier local research tag.
+
+For scratch runs on a separate machine, use the remote wrapper from the laptop and let the Mac mini host the actual research run:
+
+```bash
+uv run python -m equidock_diff.remote_research_runner \
+  --remote-host mini.tailnet.ts.net \
+  --remote-repo /Users/sadik/Projects/equidock-diff \
+  --remote-dataset-target /absolute/path/to/pdbbind_v2020 \
+  --complex-id 10gs \
+  --model frame_backbone \
+  --noise-schedule cosine \
+  --tag mini_probe \
+  --dry-run
+```
+
+Remote-workflow policy:
+
+- scratch research should run on the Mac mini over Tailscale SSH when possible
+- the Mac mini should use a dedicated clone of this repo
+- the remote dataset should be exposed through `data/pdbbind_v2020` inside that clone
+- fetched summaries are written locally under `runs/remote/<tag>/` and are not committed
+- canonical panel evidence remains CPU-based and curated under `docs/training/`
+
+Muon is intentionally deferred until there is a materially different architecture to test; current near-term work should focus on architecture, loss design, and data/context handling.
