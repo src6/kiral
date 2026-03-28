@@ -57,22 +57,33 @@ def kabsch_align(
     mobile: torch.Tensor,
     target: torch.Tensor,
 ) -> torch.Tensor:
+    """Align mobile onto target with Kabsch.
+
+    MPS fallback: SVD is not implemented efficiently on MPS for this path, so
+    perform the small alignment solve on CPU and move the aligned coordinates
+    back to the original device.
+    """
     if mobile.shape != target.shape or mobile.dim() != 2 or mobile.size(-1) != 3:
         raise ValueError("mobile and target must both have shape [N, 3].")
 
-    mobile_center = mobile.mean(dim=0, keepdim=True)
-    target_center = target.mean(dim=0, keepdim=True)
-    mobile_centered = mobile - mobile_center
-    target_centered = target - target_center
+    solve_device = torch.device("cpu") if mobile.device.type == "mps" else mobile.device
+    mobile_solve = mobile.to(solve_device)
+    target_solve = target.to(solve_device)
+
+    mobile_center = mobile_solve.mean(dim=0, keepdim=True)
+    target_center = target_solve.mean(dim=0, keepdim=True)
+    mobile_centered = mobile_solve - mobile_center
+    target_centered = target_solve - target_center
 
     covariance = mobile_centered.transpose(0, 1) @ target_centered
     u, _, vh = torch.linalg.svd(covariance)
-    reflection = torch.sign(torch.linalg.det(u @ vh))
+    reflection = torch.sign(torch.linalg.det(u @ vh)).item()
     correction = torch.diag(
-        torch.tensor([1.0, 1.0, reflection], device=mobile.device, dtype=mobile.dtype)
+        torch.tensor([1.0, 1.0, reflection], device=solve_device, dtype=mobile.dtype)
     )
     rotation = u @ correction @ vh
-    return mobile_centered @ rotation + target_center
+    aligned = mobile_centered @ rotation + target_center
+    return aligned.to(mobile.device)
 
 
 def aligned_rmsd(
