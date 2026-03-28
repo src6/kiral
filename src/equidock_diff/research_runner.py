@@ -39,12 +39,14 @@ class RunSpec:
     noise_schedule: str
     seed: int
     steps: int
+    crop_cutoff: float
     sample_steps: int
     sample_time_power: float
     ligand_shape_weight: float
     ligand_protein_clash_weight: float
     sample_score_clip: float
     sample_position_clip: float
+    use_edge_attention: bool
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", dest="seeds", action="append", type=int, default=None)
     parser.add_argument("--steps", dest="steps_values", action="append", type=int, default=None)
     parser.add_argument(
+        "--crop-cutoff",
+        dest="crop_cutoffs",
+        action="append",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
         "--sample-steps",
         dest="sample_steps_values",
         action="append",
@@ -166,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         type=float,
         default=None,
+    )
+    parser.add_argument(
+        "--use-edge-attention",
+        action="store_true",
+        help="Enable lightweight edge attention inside the frame-backbone EGNN layers",
     )
     parser.add_argument(
         "--sample-score-clip",
@@ -284,6 +298,7 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
     examples = _resolve_examples(args)
     seeds = [int(value) for value in _defaulted(args.seeds, train_defaults.seed)]
     steps_values = [int(value) for value in _defaulted(args.steps_values, train_defaults.steps)]
+    crop_cutoffs = [float(value) for value in _defaulted(args.crop_cutoffs, train_defaults.crop_cutoff)]
     sample_steps_values = [
         int(value) for value in _defaulted(args.sample_steps_values, train_defaults.sample_steps)
     ]
@@ -312,31 +327,34 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
 
     specs: list[RunSpec] = []
     for example in examples:
-        for seed in sorted(seeds):
-            for steps in sorted(steps_values):
-                for sample_steps in sorted(sample_steps_values):
-                    for sample_time_power in sorted(sample_time_powers):
-                        for ligand_shape_weight in sorted(ligand_shape_weights):
-                            for ligand_protein_clash_weight in sorted(ligand_protein_clash_weights):
-                                for sample_score_clip in sorted(sample_score_clips):
-                                    for sample_position_clip in sorted(sample_position_clips):
-                                        specs.append(
-                                            RunSpec(
-                                                complex_id=example.complex_id,
-                                                protein_path=example.protein_path,
-                                                ligand_path=example.ligand_path,
-                                                model=args.model,
-                                                noise_schedule=args.noise_schedule,
-                                                seed=seed,
-                                                steps=steps,
-                                                sample_steps=sample_steps,
-                                                sample_time_power=sample_time_power,
-                                                ligand_shape_weight=ligand_shape_weight,
-                                                ligand_protein_clash_weight=ligand_protein_clash_weight,
-                                                sample_score_clip=sample_score_clip,
-                                                sample_position_clip=sample_position_clip,
-                                            )
-                                        )
+            for seed in sorted(seeds):
+                for steps in sorted(steps_values):
+                    for crop_cutoff in sorted(crop_cutoffs):
+                        for sample_steps in sorted(sample_steps_values):
+                            for sample_time_power in sorted(sample_time_powers):
+                                for ligand_shape_weight in sorted(ligand_shape_weights):
+                                    for ligand_protein_clash_weight in sorted(ligand_protein_clash_weights):
+                                        for sample_score_clip in sorted(sample_score_clips):
+                                            for sample_position_clip in sorted(sample_position_clips):
+                                                specs.append(
+                                                    RunSpec(
+                                                        complex_id=example.complex_id,
+                                                        protein_path=example.protein_path,
+                                                        ligand_path=example.ligand_path,
+                                                        model=args.model,
+                                                        noise_schedule=args.noise_schedule,
+                                                        seed=seed,
+                                                        steps=steps,
+                                                        crop_cutoff=crop_cutoff,
+                                                        sample_steps=sample_steps,
+                                                        sample_time_power=sample_time_power,
+                                                        ligand_shape_weight=ligand_shape_weight,
+                                                        ligand_protein_clash_weight=ligand_protein_clash_weight,
+                                                        sample_score_clip=sample_score_clip,
+                                                        sample_position_clip=sample_position_clip,
+                                                        use_edge_attention=bool(args.use_edge_attention),
+                                                    )
+                                                )
     return sorted(
         specs,
         key=lambda item: (
@@ -345,12 +363,14 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
             item.noise_schedule,
             item.seed,
             item.steps,
+            item.crop_cutoff,
             item.ligand_shape_weight,
             item.ligand_protein_clash_weight,
             item.sample_steps,
             item.sample_time_power,
             item.sample_score_clip,
             item.sample_position_clip,
+            item.use_edge_attention,
         ),
     )
 
@@ -362,8 +382,10 @@ def training_signature(spec: RunSpec) -> tuple[object, ...]:
         spec.noise_schedule,
         spec.seed,
         spec.steps,
+        spec.crop_cutoff,
         spec.ligand_shape_weight,
         spec.ligand_protein_clash_weight,
+        spec.use_edge_attention,
     )
 
 
@@ -371,10 +393,12 @@ def run_name_for_spec(spec: RunSpec) -> str:
     return (
         f"{spec.complex_id}_{spec.model}_{spec.noise_schedule}"
         f"_seed{spec.seed}_steps{spec.steps}"
+        f"_crop{_float_token(spec.crop_cutoff)}"
         f"_sample{spec.sample_steps}"
         f"_time{_float_token(spec.sample_time_power)}"
         f"_shape{_float_token(spec.ligand_shape_weight)}"
         f"_clash{_float_token(spec.ligand_protein_clash_weight)}"
+        f"_attn{1 if spec.use_edge_attention else 0}"
         f"_score{_float_token(spec.sample_score_clip)}"
         f"_pos{_float_token(spec.sample_position_clip)}"
     )
@@ -383,8 +407,10 @@ def run_name_for_spec(spec: RunSpec) -> str:
 def checkpoint_name_for_spec(spec: RunSpec) -> str:
     return (
         f"{spec.complex_id}_{spec.model}_{spec.noise_schedule}"
-        f"_seed{spec.seed}_steps{spec.steps}_shape{_float_token(spec.ligand_shape_weight)}"
+        f"_seed{spec.seed}_steps{spec.steps}_crop{_float_token(spec.crop_cutoff)}"
+        f"_shape{_float_token(spec.ligand_shape_weight)}"
         f"_clash{_float_token(spec.ligand_protein_clash_weight)}"
+        f"_attn{1 if spec.use_edge_attention else 0}"
     )
 
 
@@ -472,6 +498,8 @@ def _train_argv(
         str(spec.seed),
         "--steps",
         str(spec.steps),
+        "--crop-cutoff",
+        str(spec.crop_cutoff),
         "--sample-steps",
         str(spec.sample_steps),
         "--sample-time-power",
@@ -506,6 +534,8 @@ def _train_argv(
         str(planned.plot_path),
     ]
     argv.extend(_model_training_args(spec.model))
+    if spec.use_edge_attention:
+        argv.append("--use-edge-attention")
     if not save_artifacts:
         argv.extend(["--skip-pose-artifacts", "--skip-plot"])
     return argv
@@ -955,6 +985,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--max-parallel must be at least 1.")
     if args.stagger_seconds < 0.0:
         raise ValueError("--stagger-seconds must be non-negative.")
+    if args.use_edge_attention and args.model != "frame_backbone":
+        raise ValueError("--use-edge-attention currently requires --model frame_backbone.")
     requested_device, actual_device = resolve_runner_device(args.device_policy, args.device)
     root = args.output_root / args.tag
     specs = expand_run_specs(args)

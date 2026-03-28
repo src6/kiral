@@ -82,6 +82,7 @@ RESUME_COMPAT_KEYS = (
     "ligand_global_node",
     "complete_frame",
     "frame_hetero_backbone",
+    "use_edge_attention",
     "learning_rate",
     "ligand_bond_weight",
     "ligand_shape_weight",
@@ -156,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--frame-hetero-backbone",
         action="store_true",
         help="Use the heterogeneous frame-based backbone with local orientation features",
+    )
+    parser.add_argument(
+        "--use-edge-attention",
+        action="store_true",
+        help="Enable lightweight incoming-edge attention inside the frame-backbone EGNN layers",
     )
     parser.add_argument(
         "--hetgnn-backbone",
@@ -390,6 +396,7 @@ def make_model_for_node_dim(
                 use_ligand_global_node=args.ligand_global_node,
                 use_complete_frame=args.complete_frame,
                 use_frame_hetero_backbone=args.frame_hetero_backbone,
+                use_edge_attention=args.use_edge_attention,
             )
         )
     )
@@ -1113,6 +1120,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--sample-time-power must be positive.")
     if args.ligand_shape_weight < 0.0:
         raise ValueError("--ligand-shape-weight must be non-negative.")
+    if args.use_edge_attention and not args.frame_hetero_backbone:
+        raise ValueError("--use-edge-attention currently requires --frame-hetero-backbone.")
     if dataset_mode_enabled(args) and (args.protein_path is not None or args.ligand_path is not None):
         raise ValueError("Dataset mode cannot be combined with --protein-path/--ligand-path.")
     if dataset_mode_enabled(args) and args.batch_size != 1:

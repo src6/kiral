@@ -57,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", dest="seeds", action="append", type=int, default=None)
     parser.add_argument("--steps", dest="steps_values", action="append", type=int, default=None)
     parser.add_argument(
+        "--crop-cutoff",
+        dest="crop_cutoffs",
+        action="append",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
         "--sample-steps",
         dest="sample_steps_values",
         action="append",
@@ -83,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         type=float,
         default=None,
+    )
+    parser.add_argument(
+        "--use-edge-attention",
+        action="store_true",
+        help="Enable lightweight incoming-edge attention inside frame-backbone runs",
     )
     parser.add_argument(
         "--sample-score-clip",
@@ -311,6 +323,8 @@ def build_remote_runner_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--seed", str(seed)])
     for steps in _defaulted(args.steps_values):
         argv.extend(["--steps", str(steps)])
+    for crop_cutoff in _defaulted(args.crop_cutoffs):
+        argv.extend(["--crop-cutoff", str(crop_cutoff)])
     for sample_steps in _defaulted(args.sample_steps_values):
         argv.extend(["--sample-steps", str(sample_steps)])
     for value in _defaulted(args.sample_time_powers):
@@ -323,6 +337,8 @@ def build_remote_runner_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--sample-score-clip", str(value)])
     for value in _defaulted(args.sample_position_clips):
         argv.extend(["--sample-position-clip", str(value)])
+    if args.use_edge_attention:
+        argv.append("--use-edge-attention")
     argv.extend(["--output-root", str(remote_research_root(args))])
     return argv
 
