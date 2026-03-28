@@ -1,0 +1,5 @@
+candidate,contact_weight,context_policy,crop_cutoff,mean_raw_rmse,mean_aligned_rmsd,aligned_delta_vs_adaptive_control,raw_delta_vs_adaptive_control,improved_complexes,hard_case_gate_pass
+adaptive_control,0.00,adaptive,adaptive,1.203613,0.930441,0.000000,0.000000,0,no
+contact_0.01,0.01,adaptive,adaptive,1.202368,0.928874,-0.001567,-0.001245,4,no
+contact_0.02,0.02,adaptive,adaptive,1.193114,0.918585,-0.011856,-0.010499,6,no
+contact_0.05,0.05,adaptive,adaptive,1.200573,0.929878,-0.000563,-0.003040,3,no
