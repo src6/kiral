@@ -1,2 +1,2 @@
-comparison_csv,metric,alternative,observations,p_value,mean_delta,median_delta,wins,losses,ties
-docs/training/panel20/frame_backbone_cosine_confirm/longer_training_vs_control.csv,aligned_ligand_rmsd,less,20,0.048777,-0.064899,-0.075474,14,6,0
+comparison_csv,metric,alternative,observations,p_value,mean_delta,mean_delta_ci_low,mean_delta_ci_high,median_delta,median_delta_ci_low,median_delta_ci_high,wins,losses,ties
+docs/training/panel20/frame_backbone_cosine_confirm/longer_training_vs_control.csv,aligned_ligand_rmsd,less,20,0.048777,-0.064899,-0.132835,+0.007292,-0.075474,-0.165993,+0.022763,14,6,0

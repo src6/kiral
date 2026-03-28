@@ -56,6 +56,16 @@ Full exploratory histories, raw per-run logs, bulk loss traces, sample structure
   - inference-only hard-case follow-up using regenerated checkpoints from the accepted frame-backbone cosine recipe; no inference variant cleared the promotion gate
 - `docs/training/panel20/frame_backbone_cosine_inference_confirm/`
   - explicit note that no inference-driven full-panel confirmation was run because the inference gate failed
+- `docs/training/panel20/frame_backbone_cosine_structural_diag/`
+  - structural descriptor comparison for the six hard-case regressions versus the other panel complexes
+- `docs/training/panel20/frame_backbone_cosine_sampler_diag/`
+  - sampler-redesign and sampler-internal diagnostics for the six hard cases; no inference-only override cleared the gate
+- `docs/training/panel20/frame_backbone_cosine_geometry_tuning/`
+  - hard-case geometry-aware training sweep using the new ligand-shape loss term; no candidate cleared the gate
+- `docs/training/panel20/frame_backbone_cosine_geometry_confirm/`
+  - explicit note that no geometry-driven full-panel confirmation was run because the geometry gate failed
+- `docs/training/panel20/frame_backbone_cosine_evidence/`
+  - explicit note that no extra-seed evidence pass was run because no later-stage candidate displaced the accepted recommendation
 
 These are useful supporting artifacts, but they are not the headline evaluation story in the final report.
 
@@ -77,6 +87,14 @@ The historical `docs/training/panel20/schedule/` table remains the dissertation-
 The later hard-case regression sweep in `docs/training/panel20/frame_backbone_cosine_regression_sweep/` also did not replace this recommendation, so the recipe above remains the current best validated setting in this repository.
 
 The subsequent hard-case inference diagnostics in `docs/training/panel20/frame_backbone_cosine_inference_diag/` likewise did not improve the recommendation: only `sample_steps` materially changed the hard-case behaviour, and no inference-only variant cleared the promotion gate.
+
+The later structural diagnostics in `docs/training/panel20/frame_backbone_cosine_structural_diag/` indicate that the six regressions cluster around smaller ligands and denser cropped protein neighborhoods.
+
+The sampler-redesign follow-up in `docs/training/panel20/frame_backbone_cosine_sampler_diag/` found that reverse-time power-respacing was the only meaningful inference lever, with `sample_time_power=3.0` improving `4 / 6` hard cases but still missing the aggregate promotion threshold.
+
+The geometry-aware follow-up in `docs/training/panel20/frame_backbone_cosine_geometry_tuning/` also failed to replace the recommendation: `--ligand-shape-weight 0.02` was the strongest candidate, but its hard-case aligned-RMSD gain was only `-0.003337 A`, far below the promotion threshold.
+
+No later-stage candidate displaced the accepted recipe, so the extra-seed evidence stage in `docs/training/panel20/frame_backbone_cosine_evidence/` was not run.
 
 ## Curated Experimental Showcase
 

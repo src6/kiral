@@ -11,7 +11,9 @@
 | --- | ---: |
 | p-value | `0.048777` |
 | Mean delta | `-0.064899` |
+| Mean delta 95% CI | `[-0.132835, +0.007292]` |
 | Median delta | `-0.075474` |
+| Median delta 95% CI | `[-0.165993, +0.022763]` |
 | Wins | `14` |
 | Losses | `6` |
 | Ties | `0` |
