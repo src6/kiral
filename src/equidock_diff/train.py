@@ -250,6 +250,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for the optional trajectory plot image",
     )
     parser.add_argument(
+        "--skip-pose-artifacts",
+        action="store_true",
+        help="Skip writing sample, trajectory, and ligand-only pose artifacts",
+    )
+    parser.add_argument(
+        "--skip-plot",
+        action="store_true",
+        help="Skip writing the optional plot artifact",
+    )
+    parser.add_argument(
         "--experiment-log",
         type=Path,
         default=None,
@@ -301,7 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset-cache-dir",
         type=Path,
         default=Path("data/.cache/equidock_diff_graphs"),
-        help="Directory for cached dataset graphs; used only in dataset mode",
+        help="Directory for cached protein-ligand graphs in dataset and single-pair modes",
     )
     return parser
 
@@ -391,11 +401,12 @@ def load_graph_inputs(
         raise ValueError("Pass both --protein-path and --ligand-path to use the real-pair path.")
 
     if has_protein and has_ligand:
-        batch = load_protein_ligand_graph(
+        batch = load_protein_ligand_graph_cached(
             args.protein_path,
             args.ligand_path,
             cutoff=args.crop_cutoff,
             edge_cutoff=getattr(args, "edge_cutoff", 4.5),
+            cache_dir=getattr(args, "dataset_cache_dir", None),
         )
         return (
             batch.node_features.to(device),
@@ -1010,8 +1021,9 @@ def write_sampler_diagnostics(path: Path, diagnostics: SamplerDiagnostics) -> No
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    command_argv = sys.argv[1:] if argv is None else argv
     if args.checkpoint_every < 0:
         raise ValueError("--checkpoint-every must be non-negative.")
     if args.dataset_limit < 0:
@@ -1152,6 +1164,7 @@ def main() -> int:
     if completed_steps == args.steps:
         print("resume_checkpoint_already_complete=true")
     print(f"training_seconds={elapsed:.3f}")
+    loss_csv_path: Path | None = args.loss_csv
     write_loss_csv(args.loss_csv, loss_rows)
     print(f"loss_csv={args.loss_csv}")
     if checkpoint_output is not None:
@@ -1216,21 +1229,30 @@ def main() -> int:
             anchor_protein=args.frame_hetero_backbone,
             sampler_diagnostics=sampler_context,
         )
-    write_pdb(args.output, sampled_positions)
-    write_trajectory_pdb(args.trajectory_output, trajectory)
-    print(f"sample_path={args.output}")
-    print(f"trajectory_path={args.trajectory_output}")
-    ligand_sample_path, ligand_trajectory_path = write_ligand_artifacts(
-        node_features=node_features,
-        sampled_positions=sampled_positions,
-        trajectory=trajectory,
-        ligand_output=args.ligand_output,
-        ligand_trajectory_output=args.ligand_trajectory_output,
-    )
-    if ligand_sample_path is not None:
-        print(f"ligand_sample_path={ligand_sample_path}")
-    if ligand_trajectory_path is not None:
-        print(f"ligand_trajectory_path={ligand_trajectory_path}")
+    sample_path: Path | None = None
+    trajectory_path: Path | None = None
+    ligand_sample_path: Path | None = None
+    ligand_trajectory_path: Path | None = None
+    if args.skip_pose_artifacts:
+        print("sample_artifacts=skipped")
+    else:
+        write_pdb(args.output, sampled_positions)
+        write_trajectory_pdb(args.trajectory_output, trajectory)
+        sample_path = args.output
+        trajectory_path = args.trajectory_output
+        print(f"sample_path={args.output}")
+        print(f"trajectory_path={args.trajectory_output}")
+        ligand_sample_path, ligand_trajectory_path = write_ligand_artifacts(
+            node_features=node_features,
+            sampled_positions=sampled_positions,
+            trajectory=trajectory,
+            ligand_output=args.ligand_output,
+            ligand_trajectory_output=args.ligand_trajectory_output,
+        )
+        if ligand_sample_path is not None:
+            print(f"ligand_sample_path={ligand_sample_path}")
+        if ligand_trajectory_path is not None:
+            print(f"ligand_trajectory_path={ligand_trajectory_path}")
     extra_metrics: dict[str, float] = {}
     ligand_mask = node_features[:, -1] > 0.5
     if graph_source in {"real_pair", "dataset"} and bool(ligand_mask.any()):
@@ -1244,18 +1266,22 @@ def main() -> int:
         extra_metrics["aligned_ligand_rmsd"] = aligned_ligand
         print(f"raw_ligand_rmse={raw_ligand_rmse:.6f}")
         print(f"aligned_ligand_rmsd={aligned_ligand:.6f}")
-    plot_written = maybe_write_plot(args.plot_output, trajectory, loss_rows)
-    if plot_written:
-        print(f"plot_path={args.plot_output}")
+    plot_written = False
+    if args.skip_plot:
+        print("plot_path=skipped")
     else:
-        print("plot_path=not_written (matplotlib not available)")
+        plot_written = maybe_write_plot(args.plot_output, trajectory, loss_rows)
+        if plot_written:
+            print(f"plot_path={args.plot_output}")
+        else:
+            print("plot_path=not_written (matplotlib not available)")
     if args.sampler_diagnostics_json is not None and sampler_diagnostics is not None:
         write_sampler_diagnostics(args.sampler_diagnostics_json, sampler_diagnostics)
         print(f"sampler_diagnostics_json={args.sampler_diagnostics_json}")
     if args.experiment_log is not None:
         write_experiment_log(
             args.experiment_log,
-            command=f"uv run python -m equidock_diff.train {shlex.join(sys.argv[1:])}",
+            command=f"uv run python -m equidock_diff.train {shlex.join(command_argv)}",
             device=device,
             graph_source=graph_source,
             args=args,
@@ -1263,9 +1289,9 @@ def main() -> int:
             training_seconds=elapsed,
             node_count=positions.size(0),
             edge_count=edge_index.size(1),
-            sample_path=args.output,
-            trajectory_path=args.trajectory_output,
-            loss_csv_path=args.loss_csv,
+            sample_path=sample_path,
+            trajectory_path=trajectory_path,
+            loss_csv_path=loss_csv_path,
             plot_path=args.plot_output if plot_written else None,
             extra_metrics=extra_metrics or None,
         )

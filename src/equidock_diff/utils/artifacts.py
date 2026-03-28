@@ -86,9 +86,9 @@ def write_experiment_log(
     training_seconds: float,
     node_count: int,
     edge_count: int,
-    sample_path: Path,
-    trajectory_path: Path,
-    loss_csv_path: Path,
+    sample_path: Path | None,
+    trajectory_path: Path | None,
+    loss_csv_path: Path | None,
     plot_path: Path | None,
     extra_metrics: dict[str, float] | None = None,
 ) -> None:
@@ -112,10 +112,13 @@ def write_experiment_log(
         f"- Best loss: `{best_loss:.6f}`",
         f"- Final beta_t: `{final_beta:.4f}`",
         f"- Training seconds: `{training_seconds:.3f}`",
-        f"- Loss CSV: `{loss_csv_path}`",
-        f"- Sample artifact: `{sample_path}`",
-        f"- Trajectory artifact: `{trajectory_path}`",
     ]
+    if loss_csv_path is not None:
+        lines.append(f"- Loss CSV: `{loss_csv_path}`")
+    if sample_path is not None:
+        lines.append(f"- Sample artifact: `{sample_path}`")
+    if trajectory_path is not None:
+        lines.append(f"- Trajectory artifact: `{trajectory_path}`")
     if extra_metrics is not None:
         for key, value in extra_metrics.items():
             lines.append(f"- {key.replace('_', ' ').title()}: `{value:.6f}`")
