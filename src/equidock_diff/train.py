@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import sys
 from argparse import SUPPRESS
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
 
@@ -46,6 +47,33 @@ class CheckpointState:
     source_ids: list[str] | None = None
 
 
+@dataclass(frozen=True)
+class SamplerStepDiagnostics:
+    step_index: int
+    t: float
+    dt: float
+    mean_score_norm_before_clip: float
+    max_score_norm_before_clip: float
+    mean_score_norm_after_clip: float
+    max_score_norm_after_clip: float
+    clipped_coordinate_fraction: float
+    ligand_center_displacement: float
+    ligand_radius: float
+
+
+@dataclass(frozen=True)
+class SamplerDiagnostics:
+    complex_id: str | None
+    seed: int
+    sample_steps: int
+    sample_time_power: float
+    sample_score_clip: float
+    sample_position_clip: float
+    anchor_protein: bool
+    experiment_log: str | None
+    step_metrics: list[SamplerStepDiagnostics]
+
+
 RESUME_COMPAT_KEYS = (
     "hidden_dim",
     "num_layers",
@@ -55,6 +83,7 @@ RESUME_COMPAT_KEYS = (
     "frame_hetero_backbone",
     "learning_rate",
     "ligand_bond_weight",
+    "ligand_shape_weight",
     "beta_min",
     "beta_max",
     "noise_schedule",
@@ -139,6 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Optional weight for ligand bond-length regularization",
     )
+    parser.add_argument(
+        "--ligand-shape-weight",
+        type=float,
+        default=0.0,
+        help="Optional weight for ligand local shape preservation",
+    )
     parser.add_argument("--beta-min", type=float, default=0.1, help="VP-SDE beta minimum")
     parser.add_argument("--beta-max", type=float, default=2.0, help="VP-SDE beta maximum")
     parser.add_argument(
@@ -171,6 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=50.0,
         help="Clamp coordinates during reverse diffusion",
+    )
+    parser.add_argument(
+        "--sample-time-power",
+        type=float,
+        default=1.0,
+        help="Power-respace reverse-diffusion timesteps; 1.0 preserves uniform spacing",
     )
     parser.add_argument(
         "--output",
@@ -213,6 +254,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional markdown log capturing command, settings, and key metrics",
+    )
+    parser.add_argument(
+        "--sampler-diagnostics-json",
+        type=Path,
+        default=None,
+        help="Optional JSON output for per-step sampler diagnostics",
     )
     parser.add_argument(
         "--checkpoint-path",
@@ -377,6 +424,38 @@ def checkpoint_args_dict(args: argparse.Namespace) -> dict[str, object]:
             continue
         values[key] = _checkpoint_arg_value(value)
     return values
+
+
+PATH_ARG_NAMES = {
+    "protein_path",
+    "ligand_path",
+    "output",
+    "trajectory_output",
+    "ligand_output",
+    "ligand_trajectory_output",
+    "loss_csv",
+    "plot_output",
+    "experiment_log",
+    "checkpoint_path",
+    "resume_from",
+    "dataset_root",
+    "dataset_split",
+    "dataset_cache_dir",
+    "sampler_diagnostics_json",
+}
+
+
+def saved_args_to_namespace(saved_args: dict[str, object]) -> argparse.Namespace:
+    parser = build_parser()
+    args = parser.parse_args([])
+    for key, value in saved_args.items():
+        if not hasattr(args, key):
+            continue
+        if key in PATH_ARG_NAMES and value is not None:
+            setattr(args, key, Path(str(value)))
+            continue
+        setattr(args, key, value)
+    return args
 
 
 def dataset_mode_enabled(args: argparse.Namespace) -> bool:
@@ -585,7 +664,7 @@ def training_step(
     egnn_config = getattr(model_config, "egnn", None)
     if egnn_config is not None:
         frame_hetero_backbone = bool(getattr(egnn_config, "use_frame_hetero_backbone", False))
-    loss, beta_t, _, _ = training_step_with_breakdown(
+    loss, beta_t, _, _, _ = training_step_with_breakdown(
         model,
         node_features,
         clean_positions,
@@ -594,6 +673,7 @@ def training_step(
         beta_min,
         beta_max,
         ligand_bond_weight=0.0,
+        ligand_shape_weight=0.0,
         frame_hetero_backbone=frame_hetero_backbone,
         noise_schedule=noise_schedule,
         cosine_offset=cosine_offset,
@@ -622,6 +702,33 @@ def ligand_bond_length_loss(
     return torch.mean((predicted_lengths - clean_lengths) ** 2)
 
 
+def ligand_shape_loss(
+    predicted_positions: torch.Tensor,
+    clean_positions: torch.Tensor,
+    ligand_mask: torch.Tensor | None,
+    *,
+    cutoff: float = 6.0,
+) -> torch.Tensor:
+    if ligand_mask is None:
+        ligand_predicted = predicted_positions
+        ligand_clean = clean_positions
+    else:
+        if not bool(ligand_mask.any()):
+            return predicted_positions.new_zeros(())
+        ligand_predicted = predicted_positions[ligand_mask]
+        ligand_clean = clean_positions[ligand_mask]
+
+    if ligand_clean.size(0) < 2:
+        return predicted_positions.new_zeros(())
+
+    clean_dist = torch.cdist(ligand_clean, ligand_clean)
+    predicted_dist = torch.cdist(ligand_predicted, ligand_predicted)
+    keep = torch.triu(torch.ones_like(clean_dist, dtype=torch.bool), diagonal=1) & (clean_dist <= cutoff)
+    if not bool(keep.any()):
+        return predicted_positions.new_zeros(())
+    return torch.mean((predicted_dist[keep] - clean_dist[keep]) ** 2)
+
+
 def training_step_with_breakdown(
     model: nn.Module,
     node_features: torch.Tensor,
@@ -632,11 +739,12 @@ def training_step_with_breakdown(
     beta_max: float,
     *,
     ligand_bond_weight: float,
+    ligand_shape_weight: float,
     frame_hetero_backbone: bool,
     noise_schedule: str = "linear",
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
-) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor]:
     t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
         0.05, 0.95
     )
@@ -674,15 +782,104 @@ def training_step_with_breakdown(
     else:
         score_loss = torch.mean((predicted_score - target_score) ** 2)
     bond_loss = clean_positions.new_zeros(())
-    if ligand_bond_weight > 0.0:
+    shape_loss = clean_positions.new_zeros(())
+    predicted_positions = None
+    if ligand_bond_weight > 0.0 or ligand_shape_weight > 0.0:
         predicted_positions = noised_positions + predicted_score
+    if ligand_bond_weight > 0.0:
+        assert predicted_positions is not None
         bond_loss = ligand_bond_length_loss(
             predicted_positions,
             clean_positions,
             ligand_bond_index,
         )
-    total_loss = score_loss + ligand_bond_weight * bond_loss
-    return total_loss, float(beta_t.item()), score_loss, bond_loss
+    if ligand_shape_weight > 0.0:
+        assert predicted_positions is not None
+        shape_loss = ligand_shape_loss(
+            predicted_positions,
+            clean_positions,
+            ligand_mask,
+        )
+    total_loss = score_loss + ligand_bond_weight * bond_loss + ligand_shape_weight * shape_loss
+    return total_loss, float(beta_t.item()), score_loss, bond_loss, shape_loss
+
+
+def build_sample_schedule(
+    sample_steps: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    time_power: float = 1.0,
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    if sample_steps <= 0:
+        raise ValueError("sample_steps must be positive.")
+    if time_power <= 0.0:
+        raise ValueError("sample_time_power must be positive.")
+    boundaries = torch.linspace(0.0, 1.0, sample_steps + 1, device=device, dtype=dtype)
+    boundaries = boundaries.pow(time_power)
+    schedule: list[tuple[torch.Tensor, torch.Tensor]] = []
+    for step_idx in reversed(range(sample_steps)):
+        t = boundaries[step_idx + 1]
+        dt = boundaries[step_idx + 1] - boundaries[step_idx]
+        schedule.append((t, dt))
+    return schedule
+
+
+def _positions_for_diagnostics(
+    positions: torch.Tensor,
+    ligand_mask: torch.Tensor | None,
+) -> torch.Tensor:
+    if ligand_mask is None:
+        return positions
+    if not bool(ligand_mask.any()):
+        return positions
+    return positions[ligand_mask]
+
+
+def _sampler_step_diagnostics(
+    *,
+    step_index: int,
+    t: torch.Tensor,
+    dt: torch.Tensor,
+    score_before_clip: torch.Tensor,
+    score_after_clip: torch.Tensor,
+    positions_before_clamp: torch.Tensor,
+    positions_after_clamp: torch.Tensor,
+    previous_positions: torch.Tensor,
+    ligand_mask: torch.Tensor | None,
+    position_clip: float,
+) -> SamplerStepDiagnostics:
+    relevant_score_before = _positions_for_diagnostics(score_before_clip, ligand_mask)
+    relevant_score_after = _positions_for_diagnostics(score_after_clip, ligand_mask)
+    score_before_norm = torch.linalg.norm(relevant_score_before, dim=-1)
+    score_after_norm = torch.linalg.norm(relevant_score_after, dim=-1)
+
+    relevant_before_clamp = _positions_for_diagnostics(positions_before_clamp, ligand_mask)
+    relevant_after_clamp = _positions_for_diagnostics(positions_after_clamp, ligand_mask)
+    relevant_previous = _positions_for_diagnostics(previous_positions, ligand_mask)
+    clipped_fraction = (
+        float((relevant_before_clamp.abs() > position_clip).float().mean().item())
+        if relevant_before_clamp.numel() > 0
+        else 0.0
+    )
+    current_center = relevant_after_clamp.mean(dim=0)
+    previous_center = relevant_previous.mean(dim=0)
+    center_displacement = float(torch.linalg.norm(current_center - previous_center).item())
+    radius = float(
+        torch.linalg.norm(relevant_after_clamp - current_center.unsqueeze(0), dim=-1).max().item()
+    )
+    return SamplerStepDiagnostics(
+        step_index=step_index,
+        t=float(t.item()),
+        dt=float(dt.item()),
+        mean_score_norm_before_clip=float(score_before_norm.mean().item()),
+        max_score_norm_before_clip=float(score_before_norm.max().item()),
+        mean_score_norm_after_clip=float(score_after_norm.mean().item()),
+        max_score_norm_after_clip=float(score_after_norm.max().item()),
+        clipped_coordinate_fraction=clipped_fraction,
+        ligand_center_displacement=center_displacement,
+        ligand_radius=radius,
+    )
 
 
 def sample_positions(
@@ -697,12 +894,14 @@ def sample_positions(
     score_clip: float,
     position_clip: float,
     *,
+    sample_time_power: float = 1.0,
     noise_schedule: str = "linear",
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
     reference_positions: torch.Tensor | None = None,
     anchor_protein: bool = False,
-) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    sampler_diagnostics: SamplerDiagnostics | None = None,
+) -> tuple[torch.Tensor, list[torch.Tensor], SamplerDiagnostics | None]:
     ligand_mask = infer_ligand_mask(node_features) if anchor_protein else None
     if anchor_protein:
         if reference_positions is None:
@@ -713,11 +912,14 @@ def sample_positions(
     else:
         positions = torch.randn(num_nodes, 3, device=device, dtype=torch.float32)
     trajectory = [positions.detach().cpu().clone()]
-    dt = torch.tensor(1.0 / sample_steps, device=device, dtype=torch.float32)
-    for step_idx in reversed(range(sample_steps)):
-        t = torch.tensor(
-            (step_idx + 1) / sample_steps, device=device, dtype=torch.float32
-        )
+    schedule = build_sample_schedule(
+        sample_steps,
+        device=device,
+        dtype=torch.float32,
+        time_power=sample_time_power,
+    )
+    step_diagnostics: list[SamplerStepDiagnostics] = []
+    for loop_idx, (t, dt) in enumerate(schedule):
         beta_t = beta_schedule_value(
             t,
             beta_min,
@@ -730,8 +932,14 @@ def sample_positions(
         if anchor_protein and ligand_mask is not None:
             score = score.clone()
             score[~ligand_mask] = 0.0
-        score = torch.nan_to_num(score, nan=0.0, posinf=score_clip, neginf=-score_clip)
-        score = score.clamp(-score_clip, score_clip)
+        score_before_clip = torch.nan_to_num(
+            score,
+            nan=0.0,
+            posinf=score_clip,
+            neginf=-score_clip,
+        )
+        score = score_before_clip.clamp(-score_clip, score_clip)
+        previous_positions = positions.detach().clone()
         positions = reverse_step(
             positions,
             SDEStep(t=t, dt=dt),
@@ -745,6 +953,7 @@ def sample_positions(
             posinf=position_clip,
             neginf=-position_clip,
         )
+        positions_before_clamp = positions.detach().clone()
         if anchor_protein:
             assert reference_positions is not None
             assert ligand_mask is not None
@@ -753,8 +962,52 @@ def sample_positions(
         else:
             positions = positions - positions.mean(dim=0, keepdim=True)
         positions = positions.clamp(-position_clip, position_clip)
+        if sampler_diagnostics is not None:
+            step_diagnostics.append(
+                _sampler_step_diagnostics(
+                    step_index=loop_idx,
+                    t=t,
+                    dt=dt,
+                    score_before_clip=score_before_clip,
+                    score_after_clip=score,
+                    positions_before_clamp=positions_before_clamp,
+                    positions_after_clamp=positions,
+                    previous_positions=previous_positions,
+                    ligand_mask=ligand_mask,
+                    position_clip=position_clip,
+                )
+            )
         trajectory.append(positions.detach().cpu().clone())
-    return positions, trajectory
+    diagnostics = None
+    if sampler_diagnostics is not None:
+        diagnostics = SamplerDiagnostics(
+            complex_id=sampler_diagnostics.complex_id,
+            seed=sampler_diagnostics.seed,
+            sample_steps=sample_steps,
+            sample_time_power=sample_time_power,
+            sample_score_clip=score_clip,
+            sample_position_clip=position_clip,
+            anchor_protein=anchor_protein,
+            experiment_log=sampler_diagnostics.experiment_log,
+            step_metrics=step_diagnostics,
+        )
+    return positions, trajectory, diagnostics
+
+
+def write_sampler_diagnostics(path: Path, diagnostics: SamplerDiagnostics) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "complex_id": diagnostics.complex_id,
+        "seed": diagnostics.seed,
+        "sample_steps": diagnostics.sample_steps,
+        "sample_time_power": diagnostics.sample_time_power,
+        "sample_score_clip": diagnostics.sample_score_clip,
+        "sample_position_clip": diagnostics.sample_position_clip,
+        "anchor_protein": diagnostics.anchor_protein,
+        "experiment_log": diagnostics.experiment_log,
+        "steps": [asdict(step) for step in diagnostics.step_metrics],
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def main() -> int:
@@ -763,6 +1016,10 @@ def main() -> int:
         raise ValueError("--checkpoint-every must be non-negative.")
     if args.dataset_limit < 0:
         raise ValueError("--dataset-limit must be non-negative.")
+    if args.sample_time_power <= 0.0:
+        raise ValueError("--sample-time-power must be positive.")
+    if args.ligand_shape_weight < 0.0:
+        raise ValueError("--ligand-shape-weight must be non-negative.")
     if dataset_mode_enabled(args) and (args.protein_path is not None or args.ligand_path is not None):
         raise ValueError("Dataset mode cannot be combined with --protein-path/--ligand-path.")
     if dataset_mode_enabled(args) and args.batch_size != 1:
@@ -841,7 +1098,7 @@ def main() -> int:
             current_complex_id = current_example.complex_id
 
         optimizer.zero_grad(set_to_none=True)
-        loss, beta_t, score_loss, bond_loss = training_step_with_breakdown(
+        loss, beta_t, score_loss, bond_loss, shape_loss = training_step_with_breakdown(
             model,
             node_features,
             positions,
@@ -850,6 +1107,7 @@ def main() -> int:
             args.beta_min,
             args.beta_max,
             ligand_bond_weight=args.ligand_bond_weight,
+            ligand_shape_weight=args.ligand_shape_weight,
             frame_hetero_backbone=args.frame_hetero_backbone,
             noise_schedule=args.noise_schedule,
             cosine_offset=args.cosine_offset,
@@ -869,6 +1127,8 @@ def main() -> int:
                     f" score_loss={score_loss.item():.6f}"
                     f" bond_loss={bond_loss.item():.6f}"
                 )
+            if args.ligand_shape_weight > 0.0:
+                line += f" shape_loss={shape_loss.item():.6f}"
             print(line)
 
         if checkpoint_output is not None and args.checkpoint_every > 0:
@@ -919,7 +1179,25 @@ def main() -> int:
         print(f"sample_complex={sample_example.complex_id}")
 
     with torch.no_grad():
-        sampled_positions, trajectory = sample_positions(
+        sampler_context = None
+        if args.sampler_diagnostics_json is not None:
+            complex_id = None
+            if dataset_examples is not None:
+                complex_id = sample_example.complex_id
+            elif args.protein_path is not None:
+                complex_id = args.protein_path.name.replace("_protein.pdb", "")
+            sampler_context = SamplerDiagnostics(
+                complex_id=complex_id,
+                seed=args.seed,
+                sample_steps=args.sample_steps,
+                sample_time_power=args.sample_time_power,
+                sample_score_clip=args.sample_score_clip,
+                sample_position_clip=args.sample_position_clip,
+                anchor_protein=args.frame_hetero_backbone,
+                experiment_log=str(args.experiment_log) if args.experiment_log is not None else None,
+                step_metrics=[],
+            )
+        sampled_positions, trajectory, sampler_diagnostics = sample_positions(
             model,
             node_features,
             edge_index,
@@ -930,11 +1208,13 @@ def main() -> int:
             args.beta_max,
             args.sample_score_clip,
             args.sample_position_clip,
+            sample_time_power=args.sample_time_power,
             noise_schedule=args.noise_schedule,
             cosine_offset=args.cosine_offset,
             cosine_nu=args.cosine_nu,
             reference_positions=positions,
             anchor_protein=args.frame_hetero_backbone,
+            sampler_diagnostics=sampler_context,
         )
     write_pdb(args.output, sampled_positions)
     write_trajectory_pdb(args.trajectory_output, trajectory)
@@ -969,6 +1249,9 @@ def main() -> int:
         print(f"plot_path={args.plot_output}")
     else:
         print("plot_path=not_written (matplotlib not available)")
+    if args.sampler_diagnostics_json is not None and sampler_diagnostics is not None:
+        write_sampler_diagnostics(args.sampler_diagnostics_json, sampler_diagnostics)
+        print(f"sampler_diagnostics_json={args.sampler_diagnostics_json}")
     if args.experiment_log is not None:
         write_experiment_log(
             args.experiment_log,

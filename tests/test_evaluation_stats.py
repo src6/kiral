@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from equidock_diff.evaluation_stats import (
+    bootstrap_confidence_interval,
     exact_sign_permutation_p_value,
     filter_seed_all_rows,
     load_metric_rows,
@@ -130,6 +131,8 @@ def test_summarize_deltas_reports_effect_size_and_counts(tmp_path: Path) -> None
     assert result.observations == 3
     assert result.mean_delta == pytest.approx(-0.0333333333)
     assert result.median_delta == pytest.approx(0.0)
+    assert result.mean_delta_ci_low <= result.mean_delta <= result.mean_delta_ci_high
+    assert result.median_delta_ci_low <= result.median_delta <= result.median_delta_ci_high
     assert result.wins == 1
     assert result.losses == 1
     assert result.ties == 1
@@ -172,6 +175,7 @@ def test_main_writes_stats_outputs_for_significant_pattern(
     markdown = markdown_path.read_text(encoding="utf-8")
     assert "Comparison CSV" in markdown
     assert "| p-value | `0.062500` |" in markdown
+    assert "Mean delta 95% CI" in markdown
     assert "| Wins | `4` |" in markdown
 
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
@@ -207,3 +211,12 @@ def test_load_metric_rows_rejects_empty_or_malformed_csv(tmp_path: Path) -> None
         load_metric_rows(empty, metric="aligned_ligand_rmsd")
     with pytest.raises(ValueError, match="missing required columns"):
         load_metric_rows(malformed, metric="aligned_ligand_rmsd")
+
+
+def test_bootstrap_confidence_interval_brackets_observed_statistic() -> None:
+    values = [-0.5, -0.4, -0.2, -0.1]
+    observed = sum(values) / len(values)
+
+    low, high = bootstrap_confidence_interval(values, statistic="mean", iterations=500, seed=7)
+
+    assert low <= observed <= high
