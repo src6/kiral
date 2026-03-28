@@ -48,6 +48,10 @@ Full exploratory histories, raw per-run logs, bulk loss traces, sample structure
   - exploratory CPU sweep reports used to select a better cosine frame-backbone configuration on a 5-complex subset
 - `docs/training/panel20/frame_backbone_cosine_confirm/`
   - full-panel confirmation reports for the promoted frame-backbone cosine configuration against the reused CPU control panel
+- `docs/training/panel20/frame_backbone_cosine_regression_sweep/`
+  - targeted hard-case follow-up on the six regression complexes from the accepted confirmation; no candidate cleared the promotion gate
+- `docs/training/panel20/frame_backbone_cosine_regression_confirm/`
+  - explicit note that a second full-panel confirmation was not run because the hard-case gate failed
 
 These are useful supporting artifacts, but they are not the headline evaluation story in the final report.
 
@@ -65,6 +69,8 @@ This recommendation is based on:
   - full 20-complex confirmation showing mean raw RMSE `-0.042488`, mean aligned RMSD `-0.064899`, and no Success@2A drop
 
 The historical `docs/training/panel20/schedule/` table remains the dissertation-era canonical comparison. It is preserved as historical evidence and is not retroactively rewritten by this follow-on result.
+
+The later hard-case regression sweep in `docs/training/panel20/frame_backbone_cosine_regression_sweep/` also did not replace this recommendation, so the recipe above remains the current best validated setting in this repository.
 
 ## Curated Experimental Showcase
 
