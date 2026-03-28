@@ -99,7 +99,7 @@ def smoke_run_is_finite(
 
     for _ in range(config.smoke_steps):
         optimizer.zero_grad(set_to_none=True)
-        loss, _, _, _ = training_step_with_breakdown(
+        loss, _, _, _, _ = training_step_with_breakdown(
             model,
             node_features,
             positions,
@@ -108,6 +108,7 @@ def smoke_run_is_finite(
             config.beta_min,
             config.beta_max,
             ligand_bond_weight=config.ligand_bond_weight,
+            ligand_shape_weight=0.0,
             frame_hetero_backbone=False,
         )
         if not torch.isfinite(loss):

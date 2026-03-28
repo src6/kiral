@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import itertools
+import random
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,10 @@ class SignificanceResult:
     p_value: float
     mean_delta: float
     median_delta: float
+    mean_delta_ci_low: float
+    mean_delta_ci_high: float
+    median_delta_ci_low: float
+    median_delta_ci_high: float
     wins: int
     losses: int
     ties: int
@@ -182,6 +187,34 @@ def filter_seed_all_rows(rows: list[ComparisonRow]) -> list[ComparisonRow]:
     return filtered
 
 
+def bootstrap_confidence_interval(
+    values: list[float],
+    *,
+    statistic: str,
+    iterations: int = 2000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> tuple[float, float]:
+    if not values:
+        raise ValueError("At least one value is required for bootstrap confidence intervals.")
+    rng = random.Random(seed)
+    estimates: list[float] = []
+    sample_size = len(values)
+    for _ in range(iterations):
+        sample = [values[rng.randrange(sample_size)] for _ in range(sample_size)]
+        if statistic == "mean":
+            estimates.append(statistics.fmean(sample))
+        elif statistic == "median":
+            estimates.append(statistics.median(sample))
+        else:
+            raise ValueError(f"Unsupported bootstrap statistic: {statistic}")
+    estimates.sort()
+    tail = (1.0 - confidence) / 2.0
+    lower_index = max(int(tail * iterations), 0)
+    upper_index = min(int((1.0 - tail) * iterations), iterations - 1)
+    return estimates[lower_index], estimates[upper_index]
+
+
 def exact_sign_permutation_p_value(
     deltas: list[float],
     *,
@@ -231,6 +264,10 @@ def summarize_deltas(
         p_value=exact_sign_permutation_p_value(deltas, alternative=alternative),
         mean_delta=statistics.fmean(deltas),
         median_delta=statistics.median(deltas),
+        mean_delta_ci_low=bootstrap_confidence_interval(deltas, statistic="mean")[0],
+        mean_delta_ci_high=bootstrap_confidence_interval(deltas, statistic="mean")[1],
+        median_delta_ci_low=bootstrap_confidence_interval(deltas, statistic="median")[0],
+        median_delta_ci_high=bootstrap_confidence_interval(deltas, statistic="median")[1],
         wins=wins,
         losses=losses,
         ties=ties,
@@ -253,7 +290,9 @@ def write_markdown(path: Path, result: SignificanceResult) -> None:
         "| --- | ---: |",
         f"| p-value | `{result.p_value:.6f}` |",
         f"| Mean delta | `{result.mean_delta:+.6f}` |",
+        f"| Mean delta 95% CI | `[{result.mean_delta_ci_low:+.6f}, {result.mean_delta_ci_high:+.6f}]` |",
         f"| Median delta | `{result.median_delta:+.6f}` |",
+        f"| Median delta 95% CI | `[{result.median_delta_ci_low:+.6f}, {result.median_delta_ci_high:+.6f}]` |",
         f"| Wins | `{result.wins}` |",
         f"| Losses | `{result.losses}` |",
         f"| Ties | `{result.ties}` |",
@@ -275,7 +314,11 @@ def write_csv(path: Path, result: SignificanceResult) -> None:
                 "observations",
                 "p_value",
                 "mean_delta",
+                "mean_delta_ci_low",
+                "mean_delta_ci_high",
                 "median_delta",
+                "median_delta_ci_low",
+                "median_delta_ci_high",
                 "wins",
                 "losses",
                 "ties",
@@ -289,7 +332,11 @@ def write_csv(path: Path, result: SignificanceResult) -> None:
                 result.observations,
                 f"{result.p_value:.6f}",
                 f"{result.mean_delta:+.6f}",
+                f"{result.mean_delta_ci_low:+.6f}",
+                f"{result.mean_delta_ci_high:+.6f}",
                 f"{result.median_delta:+.6f}",
+                f"{result.median_delta_ci_low:+.6f}",
+                f"{result.median_delta_ci_high:+.6f}",
                 result.wins,
                 result.losses,
                 result.ties,
@@ -314,7 +361,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"observations={result.observations}")
     print(f"p_value={result.p_value:.6f}")
     print(f"mean_delta={result.mean_delta:+.6f}")
+    print(f"mean_delta_ci=[{result.mean_delta_ci_low:+.6f},{result.mean_delta_ci_high:+.6f}]")
     print(f"median_delta={result.median_delta:+.6f}")
+    print(f"median_delta_ci=[{result.median_delta_ci_low:+.6f},{result.median_delta_ci_high:+.6f}]")
     print(f"wins={result.wins}")
     print(f"losses={result.losses}")
     print(f"ties={result.ties}")
