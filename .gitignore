@@ -68,3 +68,6 @@ src/equidock_diff/data/*.tar.gz
 
 # Local dataset link
 data/
+
+# Local research workspace
+runs/research/
