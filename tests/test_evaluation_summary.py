@@ -58,6 +58,17 @@ def test_infer_model_detects_combined_egnn_variants() -> None:
     )
 
 
+def test_infer_model_and_schedule_detect_checkpoint_resample_logs() -> None:
+    command = (
+        "uv run python -m equidock_diff.resample_from_checkpoint "
+        "--checkpoint docs/training/panel20/frame_backbone_cosine_inference_diag/checkpoints/"
+        "184l_frame_backbone_cosine_longer_training_seed42.pt"
+    )
+
+    assert infer_model(command) == "heterogeneous frame-based backbone"
+    assert infer_noise_schedule(command) == "cosine"
+
+
 def test_parse_experiment_log_extracts_metrics(tmp_path: Path) -> None:
     log_path = tmp_path / "10gs_hetgnn_log.md"
     log_path.write_text(
