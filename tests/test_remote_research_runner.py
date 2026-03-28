@@ -10,7 +10,9 @@ from equidock_diff.remote_research_runner import (
     build_remote_dataset_setup_command,
     build_remote_git_update_command,
     build_remote_runner_command,
+    ensure_remote_host_responsive,
     local_summary_root,
+    maybe_start_remote_caffeinate,
     remote_research_root,
     resolve_sync_mode,
 )
@@ -130,3 +132,105 @@ def test_remote_and_local_output_roots_are_derived_from_tag() -> None:
 
     assert remote_research_root(args) == PurePosixPath("/Users/sadik/Projects/equidock-diff/runs/research")
     assert local_summary_root(args) == Path("runs/remote/probe")
+
+
+def test_ensure_remote_host_responsive_retries_until_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts: list[str] = []
+
+    def fake_run_remote_shell(remote_host: str, command: str) -> None:
+        attempts.append(f"{remote_host}:{command}")
+        if len(attempts) < 3:
+            raise subprocess.CalledProcessError(255, ["ssh", remote_host, command], stderr="timeout")
+
+    import subprocess
+
+    monkeypatch.setattr(
+        "equidock_diff.remote_research_runner.run_remote_shell",
+        fake_run_remote_shell,
+    )
+    monkeypatch.setattr("equidock_diff.remote_research_runner.time.sleep", lambda _seconds: None)
+
+    ensure_remote_host_responsive("macmini-tailscale", attempts=3, delay_seconds=0.1)
+
+    assert len(attempts) == 3
+
+
+def test_ensure_remote_host_responsive_raises_after_all_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    monkeypatch.setattr(
+        "equidock_diff.remote_research_runner.run_remote_shell",
+        lambda remote_host, command: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(255, ["ssh", remote_host, command], stderr="timeout")
+        ),
+    )
+    monkeypatch.setattr("equidock_diff.remote_research_runner.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="did not become responsive"):
+        ensure_remote_host_responsive("macmini-tailscale", attempts=2, delay_seconds=0.1)
+
+
+def test_maybe_start_remote_caffeinate_runs_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        "equidock_diff.remote_research_runner.run_remote_shell",
+        lambda host, command: commands.append((host, command)),
+    )
+    args = build_parser().parse_args(
+        [
+            "--complex-id",
+            "10gs",
+            "--model",
+            "frame_backbone",
+            "--noise-schedule",
+            "cosine",
+            "--tag",
+            "probe",
+            "--remote-host",
+            "macmini-tailscale",
+            "--remote-repo",
+            "/Users/sadik/Projects/equidock-diff",
+        ]
+    )
+
+    maybe_start_remote_caffeinate(args)
+
+    assert commands == [
+        (
+            "macmini-tailscale",
+            "nohup caffeinate -dimsu -t 21600 >/tmp/equidock_diff_caffeinate.log 2>&1 </dev/null &",
+        )
+    ]
+
+
+def test_maybe_start_remote_caffeinate_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        "equidock_diff.remote_research_runner.run_remote_shell",
+        lambda host, command: commands.append((host, command)),
+    )
+    args = build_parser().parse_args(
+        [
+            "--complex-id",
+            "10gs",
+            "--model",
+            "frame_backbone",
+            "--noise-schedule",
+            "cosine",
+            "--tag",
+            "probe",
+            "--remote-host",
+            "macmini-tailscale",
+            "--remote-repo",
+            "/Users/sadik/Projects/equidock-diff",
+            "--allow-remote-sleep",
+        ]
+    )
+
+    maybe_start_remote_caffeinate(args)
+
+    assert commands == []
