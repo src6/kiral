@@ -122,21 +122,35 @@ def _apply_overrides(args: argparse.Namespace, cli_args: argparse.Namespace) -> 
 def _load_sampling_graph(
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, str]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, str, float | None]:
     if dataset_mode_enabled(args):
         examples = build_dataset_examples(args)
         sample_example = dataset_example_for_step(examples, args.steps)
-        node_features, positions, edge_index, ligand_bond_index = load_dataset_example(
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_dataset_example(
             sample_example,
             args,
             device,
         )
-        return node_features, positions, edge_index, ligand_bond_index, sample_example.complex_id
-    node_features, positions, edge_index, ligand_bond_index = load_graph_inputs(args, device)
+        return (
+            node_features,
+            positions,
+            edge_index,
+            ligand_bond_index,
+            sample_example.complex_id,
+            resolved_crop_cutoff,
+        )
+    node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_graph_inputs(args, device)
     complex_id = None
     if args.protein_path is not None:
         complex_id = args.protein_path.name.replace("_protein.pdb", "")
-    return node_features, positions, edge_index, ligand_bond_index, complex_id or "synthetic"
+    return (
+        node_features,
+        positions,
+        edge_index,
+        ligand_bond_index,
+        complex_id or "synthetic",
+        resolved_crop_cutoff,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -154,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--sample-time-power must be positive.")
 
     torch.manual_seed(int(args.seed))
-    node_features, positions, edge_index, _ligand_bond_index, complex_id = _load_sampling_graph(args, device)
+    node_features, positions, edge_index, _ligand_bond_index, complex_id, resolved_crop_cutoff = _load_sampling_graph(args, device)
     model = make_model_for_node_dim(args, device, node_dim=node_features.size(-1))
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     checkpoint_state = load_checkpoint(
@@ -265,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
             loss_csv_path=args.loss_csv,
             plot_path=args.plot_output if plot_written else None,
             extra_metrics=extra_metrics or None,
+            resolved_crop_cutoff=resolved_crop_cutoff,
         )
         print(f"experiment_log={args.experiment_log}")
 

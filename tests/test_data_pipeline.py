@@ -10,9 +10,11 @@ from equidock_diff.data.pipeline import (
     build_graph_batch,
     build_radius_edge_index,
     graph_cache_path,
+    ligand_max_span,
     load_protein_graph,
     load_protein_ligand_graph,
     load_protein_ligand_graph_cached,
+    resolve_context_crop_cutoff,
 )
 from equidock_diff.data.io import (
     ProteinLigandPaths,
@@ -180,6 +182,32 @@ def test_load_protein_ligand_graph_from_files(tmp_path: Path) -> None:
     assert batch.ligand_bond_index is not None
     assert batch.ligand_bond_index.shape[0] == 2
     assert torch.all(batch.ligand_bond_index < ligand_count)
+    assert batch.resolved_crop_cutoff == pytest.approx(10.0)
+
+
+def test_resolve_context_crop_cutoff_is_clamped() -> None:
+    compact = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32)
+    wide = torch.tensor([[0.0, 0.0, 0.0], [20.0, 0.0, 0.0]], dtype=torch.float32)
+
+    assert ligand_max_span(compact) == pytest.approx(0.0)
+    assert resolve_context_crop_cutoff(compact, context_policy="adaptive", cutoff=8.0) == pytest.approx(6.0)
+    assert resolve_context_crop_cutoff(wide, context_policy="adaptive", cutoff=8.0) == pytest.approx(10.0)
+    assert resolve_context_crop_cutoff(wide, context_policy="fixed", cutoff=8.0) == pytest.approx(8.0)
+
+
+def test_load_protein_ligand_graph_adaptive_context_records_resolved_cutoff(tmp_path: Path) -> None:
+    pdb_path, ligand_path = _write_test_pair(tmp_path)
+
+    batch = load_protein_ligand_graph(
+        pdb_path,
+        ligand_path,
+        cutoff=8.0,
+        edge_cutoff=4.5,
+        context_policy="adaptive",
+    )
+
+    assert batch.resolved_crop_cutoff is not None
+    assert 6.0 <= batch.resolved_crop_cutoff <= 10.0
 
 
 def test_load_split_complex_ids_ignores_comments_and_blank_lines(tmp_path: Path) -> None:

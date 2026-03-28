@@ -87,6 +87,7 @@ RESUME_COMPAT_KEYS = (
     "ligand_bond_weight",
     "ligand_shape_weight",
     "ligand_protein_clash_weight",
+    "ligand_protein_contact_weight",
     "beta_min",
     "beta_max",
     "noise_schedule",
@@ -94,6 +95,7 @@ RESUME_COMPAT_KEYS = (
     "cosine_nu",
     "protein_path",
     "ligand_path",
+    "context_policy",
     "crop_cutoff",
     "edge_cutoff",
     "batch_size",
@@ -129,6 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=10.0,
         help="Protein crop cutoff in Angstrom for the real-pair path",
+    )
+    parser.add_argument(
+        "--context-policy",
+        choices=("fixed", "adaptive"),
+        default="fixed",
+        help="Whether to use the fixed crop cutoff or derive it adaptively from ligand span",
     )
     parser.add_argument(
         "--edge-cutoff",
@@ -187,6 +195,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Optional weight for ligand-protein soft clash avoidance",
+    )
+    parser.add_argument(
+        "--ligand-protein-contact-weight",
+        type=float,
+        default=0.0,
+        help="Optional weight for ligand-protein soft contact-window preference",
     )
     parser.add_argument("--beta-min", type=float, default=0.1, help="VP-SDE beta minimum")
     parser.add_argument("--beta-max", type=float, default=2.0, help="VP-SDE beta maximum")
@@ -406,7 +420,7 @@ def make_model_for_node_dim(
 def load_graph_inputs(
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, float | None]:
     if dataset_mode_enabled(args):
         raise ValueError("load_graph_inputs does not support dataset mode.")
 
@@ -422,16 +436,18 @@ def load_graph_inputs(
             cutoff=args.crop_cutoff,
             edge_cutoff=getattr(args, "edge_cutoff", 4.5),
             cache_dir=getattr(args, "dataset_cache_dir", None),
+            context_policy=getattr(args, "context_policy", "fixed"),
         )
         return (
             batch.node_features.to(device),
             batch.positions.to(device),
             batch.edge_index.to(device),
             None if batch.ligand_bond_index is None else batch.ligand_bond_index.to(device),
+            batch.resolved_crop_cutoff,
         )
 
     node_features, positions, edge_index = build_synthetic_graph(args.num_nodes, args.batch_size, device)
-    return node_features, positions, edge_index, None
+    return node_features, positions, edge_index, None, None
 
 
 def _checkpoint_arg_value(value: object) -> object:
@@ -506,19 +522,21 @@ def load_dataset_example(
     example: ProteinLigandPaths,
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, float | None]:
     batch = load_protein_ligand_graph_cached(
         example.protein_path,
         example.ligand_path,
         cutoff=args.crop_cutoff,
         edge_cutoff=args.edge_cutoff,
         cache_dir=args.dataset_cache_dir,
+        context_policy=args.context_policy,
     )
     return (
         batch.node_features.to(device),
         batch.positions.to(device),
         batch.edge_index.to(device),
         None if batch.ligand_bond_index is None else batch.ligand_bond_index.to(device),
+        batch.resolved_crop_cutoff,
     )
 
 
@@ -690,7 +708,7 @@ def training_step(
     egnn_config = getattr(model_config, "egnn", None)
     if egnn_config is not None:
         frame_hetero_backbone = bool(getattr(egnn_config, "use_frame_hetero_backbone", False))
-    loss, beta_t, _, _, _, _ = training_step_with_breakdown(
+    loss, beta_t, _, _, _, _, _ = training_step_with_breakdown(
         model,
         node_features,
         clean_positions,
@@ -701,6 +719,7 @@ def training_step(
         ligand_bond_weight=0.0,
         ligand_shape_weight=0.0,
         ligand_protein_clash_weight=0.0,
+        ligand_protein_contact_weight=0.0,
         frame_hetero_backbone=frame_hetero_backbone,
         noise_schedule=noise_schedule,
         cosine_offset=cosine_offset,
@@ -813,6 +832,38 @@ def ligand_protein_clash_loss(
     return torch.mean(violation.square())
 
 
+def ligand_protein_contact_loss(
+    predicted_positions: torch.Tensor,
+    node_features: torch.Tensor,
+    ligand_mask: torch.Tensor | None,
+    *,
+    offset: float = 1.5,
+    tolerance: float = 0.75,
+) -> torch.Tensor:
+    if ligand_mask is None or not bool(ligand_mask.any()):
+        return predicted_positions.new_zeros(())
+    protein_mask = ~ligand_mask
+    if not bool(protein_mask.any()):
+        return predicted_positions.new_zeros(())
+
+    radii = _node_clash_radii(node_features)
+    if radii is None:
+        return predicted_positions.new_zeros(())
+
+    ligand_positions = predicted_positions[ligand_mask]
+    protein_positions = predicted_positions[protein_mask]
+    ligand_radii = radii[ligand_mask]
+    protein_radii = radii[protein_mask]
+    if ligand_positions.numel() == 0 or protein_positions.numel() == 0:
+        return predicted_positions.new_zeros(())
+
+    distances = torch.cdist(ligand_positions, protein_positions)
+    target_distances = ligand_radii.unsqueeze(1) + protein_radii.unsqueeze(0) + offset
+    normalized_error = (distances - target_distances) / tolerance
+    contact_penalty = 1.0 - torch.exp(-0.5 * normalized_error.square())
+    return torch.mean(contact_penalty)
+
+
 def training_step_with_breakdown(
     model: nn.Module,
     node_features: torch.Tensor,
@@ -825,11 +876,12 @@ def training_step_with_breakdown(
     ligand_bond_weight: float,
     ligand_shape_weight: float,
     ligand_protein_clash_weight: float,
+    ligand_protein_contact_weight: float,
     frame_hetero_backbone: bool,
     noise_schedule: str = "linear",
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
-) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
         0.05, 0.95
     )
@@ -870,8 +922,14 @@ def training_step_with_breakdown(
     bond_loss = clean_positions.new_zeros(())
     shape_loss = clean_positions.new_zeros(())
     clash_loss = clean_positions.new_zeros(())
+    contact_loss = clean_positions.new_zeros(())
     predicted_positions = None
-    if ligand_bond_weight > 0.0 or ligand_shape_weight > 0.0 or ligand_protein_clash_weight > 0.0:
+    if (
+        ligand_bond_weight > 0.0
+        or ligand_shape_weight > 0.0
+        or ligand_protein_clash_weight > 0.0
+        or ligand_protein_contact_weight > 0.0
+    ):
         predicted_positions = noised_positions + predicted_score
     if ligand_bond_weight > 0.0:
         assert predicted_positions is not None
@@ -894,13 +952,29 @@ def training_step_with_breakdown(
             node_features,
             detected_ligand_mask,
         )
+    if ligand_protein_contact_weight > 0.0:
+        assert predicted_positions is not None
+        contact_loss = ligand_protein_contact_loss(
+            predicted_positions,
+            node_features,
+            detected_ligand_mask,
+        )
     total_loss = (
         score_loss
         + ligand_bond_weight * bond_loss
         + ligand_shape_weight * shape_loss
         + ligand_protein_clash_weight * clash_loss
+        + ligand_protein_contact_weight * contact_loss
     )
-    return total_loss, float(beta_t.item()), score_loss, bond_loss, shape_loss, clash_loss
+    return (
+        total_loss,
+        float(beta_t.item()),
+        score_loss,
+        bond_loss,
+        shape_loss,
+        clash_loss,
+        contact_loss,
+    )
 
 
 def build_sample_schedule(
@@ -1120,6 +1194,10 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--sample-time-power must be positive.")
     if args.ligand_shape_weight < 0.0:
         raise ValueError("--ligand-shape-weight must be non-negative.")
+    if args.ligand_protein_clash_weight < 0.0:
+        raise ValueError("--ligand-protein-clash-weight must be non-negative.")
+    if args.ligand_protein_contact_weight < 0.0:
+        raise ValueError("--ligand-protein-contact-weight must be non-negative.")
     if args.use_edge_attention and not args.frame_hetero_backbone:
         raise ValueError("--use-edge-attention currently requires --frame-hetero-backbone.")
     if dataset_mode_enabled(args) and (args.protein_path is not None or args.ligand_path is not None):
@@ -1130,15 +1208,16 @@ def main(argv: list[str] | None = None) -> int:
     torch.manual_seed(args.seed)
     dataset_examples = build_dataset_examples(args) if dataset_mode_enabled(args) else None
     source_ids = None if dataset_examples is None else [entry.complex_id for entry in dataset_examples]
+    resolved_crop_cutoff: float | None = None
     if dataset_examples is not None:
-        node_features, positions, edge_index, ligand_bond_index = load_dataset_example(
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_dataset_example(
             dataset_examples[0],
             args,
             device,
         )
         graph_source = "dataset"
     else:
-        node_features, positions, edge_index, ligand_bond_index = load_graph_inputs(args, device)
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_graph_inputs(args, device)
         graph_source = "real_pair" if args.protein_path is not None else "synthetic"
 
     if args.dry_run:
@@ -1192,7 +1271,7 @@ def main(argv: list[str] | None = None) -> int:
         current_complex_id = None
         if dataset_examples is not None:
             current_example = dataset_example_for_step(dataset_examples, step_idx)
-            node_features, positions, edge_index, ligand_bond_index = load_dataset_example(
+            node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_dataset_example(
                 current_example,
                 args,
                 device,
@@ -1200,7 +1279,7 @@ def main(argv: list[str] | None = None) -> int:
             current_complex_id = current_example.complex_id
 
         optimizer.zero_grad(set_to_none=True)
-        loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss = training_step_with_breakdown(
+        loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss, contact_loss = training_step_with_breakdown(
             model,
             node_features,
             positions,
@@ -1211,6 +1290,7 @@ def main(argv: list[str] | None = None) -> int:
             ligand_bond_weight=args.ligand_bond_weight,
             ligand_shape_weight=args.ligand_shape_weight,
             ligand_protein_clash_weight=args.ligand_protein_clash_weight,
+            ligand_protein_contact_weight=args.ligand_protein_contact_weight,
             frame_hetero_backbone=args.frame_hetero_backbone,
             noise_schedule=args.noise_schedule,
             cosine_offset=args.cosine_offset,
@@ -1234,6 +1314,8 @@ def main(argv: list[str] | None = None) -> int:
                 line += f" shape_loss={shape_loss.item():.6f}"
             if args.ligand_protein_clash_weight > 0.0:
                 line += f" clash_loss={clash_loss.item():.6f}"
+            if args.ligand_protein_contact_weight > 0.0:
+                line += f" contact_loss={contact_loss.item():.6f}"
             print(line)
 
         if checkpoint_output is not None and args.checkpoint_every > 0:
@@ -1277,7 +1359,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if dataset_examples is not None:
         sample_example = dataset_example_for_step(dataset_examples, args.steps)
-        node_features, positions, edge_index, ligand_bond_index = load_dataset_example(
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_dataset_example(
             sample_example,
             args,
             device,
@@ -1387,6 +1469,7 @@ def main(argv: list[str] | None = None) -> int:
             loss_csv_path=loss_csv_path,
             plot_path=args.plot_output if plot_written else None,
             extra_metrics=extra_metrics or None,
+            resolved_crop_cutoff=resolved_crop_cutoff,
         )
         print(f"experiment_log={args.experiment_log}")
     return 0

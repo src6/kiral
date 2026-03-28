@@ -97,6 +97,8 @@ def test_expand_run_specs_resolves_complex_ids_and_builds_matrix(tmp_path: Path)
     assert {item.seed for item in specs} == {42, 43}
     assert {item.sample_steps for item in specs} == {25, 50}
     assert {item.ligand_protein_clash_weight for item in specs} == {0.0}
+    assert {item.ligand_protein_contact_weight for item in specs} == {0.0}
+    assert {item.context_policy for item in specs} == {"fixed"}
     assert {item.crop_cutoff for item in specs} == {10.0}
     assert {item.use_edge_attention for item in specs} == {False}
 
@@ -147,6 +149,34 @@ def test_plan_runs_trains_again_when_crop_cutoff_changes(tmp_path: Path) -> None
             "8.0",
             "--crop-cutoff",
             "10.0",
+            "--tag",
+            "probe",
+        ]
+    )
+
+    planned = plan_runs(expand_run_specs(args), tmp_path / "runs" / "probe")
+
+    assert [item.action for item in planned] == ["train", "train"]
+
+
+def test_plan_runs_trains_again_when_context_policy_changes(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "data"
+    _write_dataset_pair(dataset_root, "10gs")
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--complex-id",
+            "10gs",
+            "--dataset-root",
+            str(dataset_root),
+            "--model",
+            "frame_backbone",
+            "--noise-schedule",
+            "cosine",
+            "--context-policy",
+            "fixed",
+            "--context-policy",
+            "adaptive",
             "--tag",
             "probe",
         ]

@@ -133,6 +133,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", dest="seeds", action="append", type=int, default=None)
     parser.add_argument("--steps", dest="steps_values", action="append", type=int, default=None)
+    parser.add_argument(
+        "--context-policy",
+        dest="context_policies",
+        action="append",
+        choices=("fixed", "adaptive"),
+        default=None,
+    )
     parser.add_argument("--crop-cutoff", dest="crop_cutoffs", action="append", type=float, default=None)
     parser.add_argument(
         "--sample-steps",
@@ -158,6 +165,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ligand-protein-clash-weight",
         dest="ligand_protein_clash_weights",
+        action="append",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--ligand-protein-contact-weight",
+        dest="ligand_protein_contact_weights",
         action="append",
         type=float,
         default=None,
@@ -399,6 +413,7 @@ def _group_runner_args(unit: ScheduledUnit, *, compare_against: str | None, save
         argv.append("--save-artifacts")
     _append_repeated(argv, "--seed", sorted({spec.seed for spec in specs}))
     _append_repeated(argv, "--steps", sorted({spec.steps for spec in specs}))
+    _append_repeated(argv, "--context-policy", sorted({spec.context_policy for spec in specs}))
     _append_repeated(argv, "--crop-cutoff", sorted({spec.crop_cutoff for spec in specs}))
     _append_repeated(argv, "--sample-steps", sorted({spec.sample_steps for spec in specs}))
     _append_repeated(argv, "--sample-time-power", sorted({spec.sample_time_power for spec in specs}))
@@ -407,6 +422,11 @@ def _group_runner_args(unit: ScheduledUnit, *, compare_against: str | None, save
         argv,
         "--ligand-protein-clash-weight",
         sorted({spec.ligand_protein_clash_weight for spec in specs}),
+    )
+    _append_repeated(
+        argv,
+        "--ligand-protein-contact-weight",
+        sorted({spec.ligand_protein_contact_weight for spec in specs}),
     )
     _append_repeated(argv, "--sample-score-clip", sorted({spec.sample_score_clip for spec in specs}))
     _append_repeated(

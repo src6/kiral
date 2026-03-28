@@ -91,6 +91,7 @@ def write_experiment_log(
     loss_csv_path: Path | None,
     plot_path: Path | None,
     extra_metrics: dict[str, float] | None = None,
+    resolved_crop_cutoff: float | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     final_step, final_loss, final_beta = loss_rows[-1]
@@ -107,6 +108,7 @@ def write_experiment_log(
         f"- Node count: `{node_count}`",
         f"- Edge count: `{edge_count}`",
         f"- Crop cutoff: `{args.crop_cutoff}`",
+        f"- Context policy: `{getattr(args, 'context_policy', 'fixed')}`",
         f"- Edge cutoff: `{args.edge_cutoff}`",
         f"- Final loss: `{final_loss:.6f}` at step `{final_step}`",
         f"- Best loss: `{best_loss:.6f}`",
@@ -119,6 +121,8 @@ def write_experiment_log(
         lines.append(f"- Sample artifact: `{sample_path}`")
     if trajectory_path is not None:
         lines.append(f"- Trajectory artifact: `{trajectory_path}`")
+    if resolved_crop_cutoff is not None:
+        lines.append(f"- Resolved crop cutoff: `{resolved_crop_cutoff:.6f}`")
     if extra_metrics is not None:
         for key, value in extra_metrics.items():
             lines.append(f"- {key.replace('_', ' ').title()}: `{value:.6f}`")

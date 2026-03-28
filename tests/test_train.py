@@ -17,6 +17,7 @@ from equidock_diff.train import (
     build_synthetic_graph,
     dataset_example_for_step,
     ligand_bond_length_loss,
+    ligand_protein_contact_loss,
     ligand_protein_clash_loss,
     ligand_shape_loss,
     load_checkpoint,
@@ -44,6 +45,7 @@ class _Args:
     ligand_bond_weight = 0.0
     ligand_shape_weight = 0.0
     ligand_protein_clash_weight = 0.0
+    ligand_protein_contact_weight = 0.0
     beta_min = 0.1
     beta_max = 2.0
     noise_schedule = "linear"
@@ -52,6 +54,7 @@ class _Args:
     protein_path = None
     ligand_path = None
     crop_cutoff = 10.0
+    context_policy = "fixed"
     edge_cutoff = 4.5
     batch_size = 1
     num_nodes = 8
@@ -243,7 +246,7 @@ def test_training_step_is_finite_for_real_pair_graph(tmp_path: Path) -> None:
     real_args.ligand_path = ligand_path
 
     device = torch.device("cpu")
-    node_features, positions, edge_index, ligand_bond_index = load_graph_inputs(real_args, device)
+    node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_graph_inputs(real_args, device)
     model = make_model(real_args, device, node_dim=node_features.shape[1])
 
     loss, beta_t = training_step(
@@ -258,6 +261,7 @@ def test_training_step_is_finite_for_real_pair_graph(tmp_path: Path) -> None:
 
     assert node_features.shape[1] == 17
     assert ligand_bond_index is not None
+    assert resolved_crop_cutoff == pytest.approx(10.0)
     assert torch.isfinite(loss)
     assert beta_t > 0.0
 
@@ -277,12 +281,14 @@ def test_load_graph_inputs_uses_cache_for_real_pair_graph(monkeypatch: pytest.Mo
         cutoff: float,
         edge_cutoff: float,
         cache_dir: Path | None,
+        context_policy: str,
     ):
         captured["protein_path"] = protein_path
         captured["ligand_path"] = ligand_path
         captured["cutoff"] = cutoff
         captured["edge_cutoff"] = edge_cutoff
         captured["cache_dir"] = cache_dir
+        captured["context_policy"] = context_policy
         return type(
             "_Batch",
             (),
@@ -291,12 +297,13 @@ def test_load_graph_inputs_uses_cache_for_real_pair_graph(monkeypatch: pytest.Mo
                 "positions": torch.zeros((2, 3), dtype=torch.float32),
                 "edge_index": torch.zeros((2, 0), dtype=torch.long),
                 "ligand_bond_index": None,
+                "resolved_crop_cutoff": 10.0,
             },
         )()
 
     monkeypatch.setattr("equidock_diff.train.load_protein_ligand_graph_cached", _fake_cached_loader)
 
-    node_features, positions, edge_index, ligand_bond_index = load_graph_inputs(
+    node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_graph_inputs(
         _RealArgs(),
         torch.device("cpu"),
     )
@@ -305,7 +312,9 @@ def test_load_graph_inputs_uses_cache_for_real_pair_graph(monkeypatch: pytest.Mo
     assert positions.shape == (2, 3)
     assert edge_index.shape == (2, 0)
     assert ligand_bond_index is None
+    assert resolved_crop_cutoff == pytest.approx(10.0)
     assert captured["cache_dir"] == Path("graph_cache")
+    assert captured["context_policy"] == "fixed"
 
 
 def test_training_step_is_finite_with_cosine_schedule() -> None:
@@ -434,7 +443,7 @@ def test_checkpoint_round_trip_restores_training_state(tmp_path: Path) -> None:
     node_features, positions, edge_index = build_synthetic_graph(args.num_nodes, 1, device)
 
     optimizer.zero_grad(set_to_none=True)
-    loss, beta_t, _, _, _, _ = training_step_with_breakdown(
+    loss, beta_t, _, _, _, _, _ = training_step_with_breakdown(
         model,
         node_features,
         positions,
@@ -445,6 +454,7 @@ def test_checkpoint_round_trip_restores_training_state(tmp_path: Path) -> None:
         ligand_bond_weight=args.ligand_bond_weight,
         ligand_shape_weight=args.ligand_shape_weight,
         ligand_protein_clash_weight=args.ligand_protein_clash_weight,
+        ligand_protein_contact_weight=args.ligand_protein_contact_weight,
         frame_hetero_backbone=args.frame_hetero_backbone,
     )
     loss.backward()
@@ -612,7 +622,7 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
     model = make_model(_SampleArgs(), device, node_dim=node_features.shape[1])
     bond_index = torch.tensor([[0, 1, 1, 0], [1, 0, 0, 1]], dtype=torch.long, device=device)
 
-    loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss = training_step_with_breakdown(
+    loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss, contact_loss = training_step_with_breakdown(
         model,
         node_features,
         positions,
@@ -623,6 +633,7 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
         ligand_bond_weight=0.5,
         ligand_shape_weight=0.25,
         ligand_protein_clash_weight=0.0,
+        ligand_protein_contact_weight=0.0,
         frame_hetero_backbone=False,
     )
 
@@ -631,6 +642,7 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
     assert torch.isfinite(bond_loss)
     assert torch.isfinite(shape_loss)
     assert torch.isfinite(clash_loss)
+    assert torch.isfinite(contact_loss)
     assert beta_t > 0.0
 
 
@@ -670,6 +682,22 @@ def test_ligand_protein_clash_loss_is_positive_for_overlapping_pairs() -> None:
     assert loss.item() > 0.0
 
 
+def test_ligand_protein_contact_loss_prefers_plausible_contact_window() -> None:
+    node_features = torch.zeros((2, 17), dtype=torch.float32)
+    node_features[0, 0] = 1.0
+    node_features[1, 0] = 1.0
+    ligand_mask = torch.tensor([True, False], dtype=torch.bool)
+
+    near_target = torch.tensor([[0.0, 0.0, 0.0], [4.9, 0.0, 0.0]], dtype=torch.float32)
+    far_from_target = torch.tensor([[0.0, 0.0, 0.0], [8.0, 0.0, 0.0]], dtype=torch.float32)
+
+    good_loss = ligand_protein_contact_loss(near_target, node_features, ligand_mask)
+    bad_loss = ligand_protein_contact_loss(far_from_target, node_features, ligand_mask)
+
+    assert good_loss.item() < bad_loss.item()
+    assert good_loss.item() >= 0.0
+
+
 def test_training_step_with_clash_breakdown_is_finite() -> None:
     class _FrameArgs(_Args):
         frame_hetero_backbone = True
@@ -697,7 +725,7 @@ def test_training_step_with_clash_breakdown_is_finite() -> None:
     model = make_model(_FrameArgs(), device, node_dim=node_features.shape[1])
     bond_index = torch.tensor([[0, 1, 1, 0], [1, 0, 0, 1]], dtype=torch.long, device=device)
 
-    loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss = training_step_with_breakdown(
+    loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss, contact_loss = training_step_with_breakdown(
         model,
         node_features,
         positions,
@@ -708,6 +736,7 @@ def test_training_step_with_clash_breakdown_is_finite() -> None:
         ligand_bond_weight=0.1,
         ligand_shape_weight=0.1,
         ligand_protein_clash_weight=0.1,
+        ligand_protein_contact_weight=0.1,
         frame_hetero_backbone=True,
     )
 
@@ -716,6 +745,7 @@ def test_training_step_with_clash_breakdown_is_finite() -> None:
     assert torch.isfinite(bond_loss)
     assert torch.isfinite(shape_loss)
     assert torch.isfinite(clash_loss)
+    assert torch.isfinite(contact_loss)
     assert beta_t > 0.0
 
 
@@ -804,6 +834,7 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
         sample_steps = 10
         crop_cutoff = 8.0
         edge_cutoff = 4.5
+        context_policy = "adaptive"
 
     log_path = tmp_path / "experiment.md"
     output_path = tmp_path / "sample.pdb"
@@ -826,6 +857,7 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
         loss_csv_path=loss_csv_path,
         plot_path=plot_path,
         extra_metrics={"aligned_ligand_rmsd": 1.2345},
+        resolved_crop_cutoff=9.25,
     )
 
     contents = log_path.read_text(encoding="utf-8")
@@ -835,6 +867,8 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
     assert "- Node count: `147`" in contents
     assert "- Edge count: `2992`" in contents
     assert "- Final loss: `0.250000` at step `5`" in contents
+    assert "- Context policy: `adaptive`" in contents
+    assert "- Resolved crop cutoff: `9.250000`" in contents
     assert "- Aligned Ligand Rmsd: `1.234500`" in contents
     assert str(output_path) in contents
 
