@@ -297,9 +297,19 @@ def build_remote_runner_argv(args: argparse.Namespace) -> list[str]:
 
 def build_remote_runner_command(args: argparse.Namespace) -> str:
     runner_argv = build_remote_runner_argv(args)
+    quoted_repo = shlex.quote(str(args.remote_repo))
+    joined_argv = shlex.join(runner_argv)
     return (
-        f"cd {shlex.quote(str(args.remote_repo))} && "
-        f"UV_CACHE_DIR=.uv-cache uv run python -m equidock_diff.research_runner {shlex.join(runner_argv)}"
+        f"cd {quoted_repo} && "
+        f"if command -v uv >/dev/null 2>&1; then "
+        f"UV_CACHE_DIR=.uv-cache uv run python -m equidock_diff.research_runner {joined_argv}; "
+        f"elif [ -x \"$HOME/.local/bin/uv\" ]; then "
+        f"UV_CACHE_DIR=.uv-cache \"$HOME/.local/bin/uv\" run python -m equidock_diff.research_runner {joined_argv}; "
+        f"elif [ -x .venv/bin/python ]; then "
+        f".venv/bin/python -m equidock_diff.research_runner {joined_argv}; "
+        f"else "
+        f"echo 'Neither uv, ~/.local/bin/uv, nor .venv/bin/python is available on the remote host.' >&2; exit 127; "
+        f"fi"
     )
 
 
@@ -350,6 +360,10 @@ def sync_remote_repo(
             "--delete",
             "--exclude",
             ".git",
+            "--exclude",
+            "docs/training",
+            "--exclude",
+            "docs/training/**",
             "--exclude",
             "runs/research",
             "--exclude",

@@ -86,6 +86,8 @@ def test_build_remote_runner_command_includes_research_args() -> None:
     command = build_remote_runner_command(args)
 
     assert "uv run python -m equidock_diff.research_runner" in command
+    assert '"$HOME/.local/bin/uv" run python -m equidock_diff.research_runner' in command
+    assert ".venv/bin/python -m equidock_diff.research_runner" in command
     assert "--complex-id 10gs" in command
     assert "--model frame_backbone" in command
     assert "--noise-schedule cosine" in command
