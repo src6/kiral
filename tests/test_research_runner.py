@@ -221,9 +221,63 @@ def test_main_dry_run_writes_planned_run_index(tmp_path: Path) -> None:
     assert result == 0
     markdown = (tmp_path / "runs" / "dry_probe" / "run_index.md").read_text(encoding="utf-8")
     csv_text = (tmp_path / "runs" / "dry_probe" / "run_index.csv").read_text(encoding="utf-8")
+    status_csv = (tmp_path / "runs" / "dry_probe" / "status.csv").read_text(encoding="utf-8")
     assert "planned_train" in markdown
     assert "planned_resample" in markdown
     assert "planned_train" in csv_text
+    assert "planned" in status_csv
+
+
+def test_main_parallel_execution_writes_completed_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dataset_root = tmp_path / "data"
+    _write_dataset_pair(dataset_root, "10gs")
+    _write_dataset_pair(dataset_root, "11gs")
+
+    def _fake_execute_train(planned, *, requested_device: str, dataset_cache_dir: Path, save_artifacts: bool) -> int:
+        planned.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        planned.checkpoint_path.write_text("checkpoint\n", encoding="utf-8")
+        _write_log(
+            planned.log_path,
+            command="uv run python -m equidock_diff.train",
+            seed=planned.spec.seed,
+            training_steps=planned.spec.steps,
+            sample_steps=planned.spec.sample_steps,
+            final_loss=0.2,
+            best_loss=0.1,
+            training_seconds=2.0,
+            raw_ligand_rmse=1.5,
+            aligned_ligand_rmsd=1.2,
+        )
+        planned.loss_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        planned.loss_csv_path.write_text("step,loss,beta_t\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("equidock_diff.research_runner.execute_train", _fake_execute_train)
+
+    result = main(
+        [
+            "--complex-id",
+            "10gs",
+            "--complex-id",
+            "11gs",
+            "--dataset-root",
+            str(dataset_root),
+            "--model",
+            "frame_backbone",
+            "--noise-schedule",
+            "cosine",
+            "--output-root",
+            str(tmp_path / "runs"),
+            "--tag",
+            "parallel_probe",
+            "--max-parallel",
+            "2",
+        ]
+    )
+
+    assert result == 0
+    status_csv = (tmp_path / "runs" / "parallel_probe" / "status.csv").read_text(encoding="utf-8")
+    assert "completed" in status_csv
 
 
 def test_main_executes_train_resample_and_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
