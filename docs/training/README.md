@@ -44,6 +44,10 @@ Full exploratory histories, raw per-run logs, bulk loss traces, sample structure
   - checkpoint/resume support for longer training runs
 - `config/evaluation/dissertation_panel20.txt`
   - the fixed complex manifest used by the canonical summary commands
+- `docs/training/panel20/frame_backbone_cosine_tuning/`
+  - exploratory CPU sweep reports used to select a better cosine frame-backbone configuration on a 5-complex subset
+- `docs/training/panel20/frame_backbone_cosine_confirm/`
+  - full-panel confirmation reports for the promoted frame-backbone cosine configuration against the reused CPU control panel
 
 These are useful supporting artifacts, but they are not the headline evaluation story in the final report.
 
