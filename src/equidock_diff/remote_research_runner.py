@@ -537,6 +537,14 @@ def fetch_remote_results(args: argparse.Namespace) -> Path:
             str(local_root / "run_index.md"),
         ]
     )
+    _run_subprocess(
+        [
+            "rsync",
+            "-az",
+            f"{args.remote_host}:{remote_tag_dir / 'status.csv'}",
+            str(local_root / "status.csv"),
+        ]
+    )
     if args.compare_against is not None:
         (local_root / "comparisons").mkdir(parents=True, exist_ok=True)
         _run_subprocess(
