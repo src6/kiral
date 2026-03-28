@@ -42,6 +42,13 @@ Use:
 - `equidock_diff.remote_research_runner` for remote scratch runs on the Mac mini
 - `equidock_diff.resample_from_checkpoint` when only inference-time parameters change
 
+Runner controls now available:
+
+- `--max-parallel N`
+- `--stagger-seconds S`
+- `--keep-going`
+- per-tag `status.csv`
+
 Inference-only changes that should reuse checkpoints:
 
 - `sample_steps`
@@ -62,6 +69,13 @@ Scratch outputs belong in:
 - `runs/remote/<tag>/`
 
 These are local-only and should not be committed.
+
+Preferred scratch workflow:
+
+- use `status.csv` and `run_index.csv` first
+- do not read raw logs unless debugging a specific failed run
+- for the Mac mini, start with `--max-parallel 2`
+- keep remote scratch runs on `cpu` unless MPS is being explicitly re-benchmarked
 
 ## Remote Mac Mini Workflow
 
@@ -138,11 +152,12 @@ Findings:
 - remote M4 CPU training time: about `2.174s`
 - remote M4 CPU is about `2.24x` faster for this workload
 - remote M4 MPS was substantially worse than remote CPU for this workload
+- a targeted Kabsch/MPS fix removed one unsupported-op warning path, but did not materially improve runtime
 
 Important constraint:
 
 - local MPS was not available inside the Codex process during benchmarking
-- remote MPS is available on the Mac mini but hits unsupported-op fallback
+- remote MPS is available on the Mac mini, but performance is still poor even after fixing the aligned-RMSD SVD fallback path
 - therefore: use Mac mini `cpu` for serious scratch runs unless the MPS path is revalidated after kernel/operator changes
 
 Operational conclusion:
@@ -162,6 +177,10 @@ Implemented relevant tooling and features include:
 - `sampler_diagnostics`
 - `research_runner`
 - `remote_research_runner`
+- `max_parallel`
+- `stagger_seconds`
+- `keep_going`
+- `status.csv`
 - `sample_time_power`
 - `sampler_diagnostics_json`
 - `ligand_shape_weight`
@@ -183,6 +202,7 @@ Prefer these assumptions unless contradicted by the task:
 - scratch outputs live in `runs/research/` and `runs/remote/`
 - remote scratch machine is the Mac mini
 - remote scratch device should default to `cpu` for this workflow
+- remote scratch runs should prefer `--max-parallel 2`
 - `docs/training/` should not be rsynced to the mini for scratch runs
 - Muon is out of scope
 
@@ -246,6 +266,26 @@ uv run python -m equidock_diff.remote_research_runner \
   --device-policy explicit \
   --device cpu \
   --tag probe_remote_cpu \
+  --sync-mode rsync
+```
+
+Remote parallel scratch probe:
+
+```bash
+uv run python -m equidock_diff.remote_research_runner \
+  --remote-host macmini-tailscale \
+  --remote-repo /Users/sadik/Projects/equidock-diff \
+  --remote-dataset-target /Users/sadik/data/pdbbind_v2020 \
+  --complex-id 10gs \
+  --model frame_backbone \
+  --noise-schedule cosine \
+  --sample-steps 25 \
+  --sample-steps 50 \
+  --device-policy explicit \
+  --device cpu \
+  --max-parallel 2 \
+  --stagger-seconds 2 \
+  --tag probe_remote_parallel \
   --sync-mode rsync
 ```
 
