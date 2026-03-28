@@ -12,14 +12,17 @@ from equidock_diff.utils.artifacts import (
     write_ligand_artifacts,
 )
 from equidock_diff.train import (
+    build_sample_schedule,
     build_dataset_examples,
     build_synthetic_graph,
     dataset_example_for_step,
     ligand_bond_length_loss,
+    ligand_shape_loss,
     load_checkpoint,
     load_graph_inputs,
     make_model,
     noised_positions_for_schedule,
+    saved_args_to_namespace,
     save_checkpoint,
     sample_positions,
     training_step,
@@ -37,6 +40,7 @@ class _Args:
     frame_hetero_backbone = False
     learning_rate = 1e-3
     ligand_bond_weight = 0.0
+    ligand_shape_weight = 0.0
     beta_min = 0.1
     beta_max = 2.0
     noise_schedule = "linear"
@@ -50,6 +54,7 @@ class _Args:
     num_nodes = 8
     steps = 5
     sample_steps = 8
+    sample_time_power = 1.0
     checkpoint_path = None
     checkpoint_every = 0
     resume_from = None
@@ -57,6 +62,7 @@ class _Args:
     dataset_split = None
     dataset_limit = 0
     dataset_cache_dir = Path("data/.cache/equidock_diff_graphs")
+    sampler_diagnostics_json = None
     seed = 42
 
 
@@ -302,7 +308,7 @@ def test_sample_positions_stays_finite_with_clipping() -> None:
     node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
     model = make_model(_SampleArgs(), device, node_dim=node_features.shape[1])
 
-    sampled_positions, trajectory = sample_positions(
+    sampled_positions, trajectory, diagnostics = sample_positions(
         model,
         node_features,
         edge_index,
@@ -318,6 +324,7 @@ def test_sample_positions_stays_finite_with_clipping() -> None:
     assert torch.isfinite(sampled_positions).all()
     assert len(trajectory) == 9
     assert torch.isfinite(trajectory[-1]).all()
+    assert diagnostics is None
 
 
 def test_sample_positions_keeps_protein_anchor_with_frame_hetero_backbone() -> None:
@@ -328,7 +335,7 @@ def test_sample_positions_keeps_protein_anchor_with_frame_hetero_backbone() -> N
     node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
     model = make_model(_FrameHeteroArgs(), device, node_dim=node_features.shape[1])
 
-    sampled_positions, trajectory = sample_positions(
+    sampled_positions, trajectory, _ = sample_positions(
         model,
         node_features,
         edge_index,
@@ -356,7 +363,7 @@ def test_checkpoint_round_trip_restores_training_state(tmp_path: Path) -> None:
     node_features, positions, edge_index = build_synthetic_graph(args.num_nodes, 1, device)
 
     optimizer.zero_grad(set_to_none=True)
-    loss, beta_t, _, _ = training_step_with_breakdown(
+    loss, beta_t, _, _, _ = training_step_with_breakdown(
         model,
         node_features,
         positions,
@@ -365,6 +372,7 @@ def test_checkpoint_round_trip_restores_training_state(tmp_path: Path) -> None:
         args.beta_min,
         args.beta_max,
         ligand_bond_weight=args.ligand_bond_weight,
+        ligand_shape_weight=args.ligand_shape_weight,
         frame_hetero_backbone=args.frame_hetero_backbone,
     )
     loss.backward()
@@ -532,7 +540,7 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
     model = make_model(_SampleArgs(), device, node_dim=node_features.shape[1])
     bond_index = torch.tensor([[0, 1, 1, 0], [1, 0, 0, 1]], dtype=torch.long, device=device)
 
-    loss, beta_t, score_loss, bond_loss = training_step_with_breakdown(
+    loss, beta_t, score_loss, bond_loss, shape_loss = training_step_with_breakdown(
         model,
         node_features,
         positions,
@@ -541,13 +549,93 @@ def test_training_step_with_bond_breakdown_is_finite() -> None:
         beta_min=0.1,
         beta_max=2.0,
         ligand_bond_weight=0.5,
+        ligand_shape_weight=0.25,
         frame_hetero_backbone=False,
     )
 
     assert torch.isfinite(loss)
     assert torch.isfinite(score_loss)
     assert torch.isfinite(bond_loss)
+    assert torch.isfinite(shape_loss)
     assert beta_t > 0.0
+
+
+def test_build_sample_schedule_default_matches_uniform_grid() -> None:
+    schedule = build_sample_schedule(
+        4,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        time_power=1.0,
+    )
+
+    times = [float(t.item()) for t, _ in schedule]
+    dts = [float(dt.item()) for _, dt in schedule]
+    assert times == pytest.approx([1.0, 0.75, 0.5, 0.25])
+    assert dts == pytest.approx([0.25, 0.25, 0.25, 0.25])
+
+
+def test_build_sample_schedule_is_monotonic_with_power_respacing() -> None:
+    schedule = build_sample_schedule(
+        5,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        time_power=2.0,
+    )
+
+    times = [float(t.item()) for t, _ in schedule]
+    dts = [float(dt.item()) for _, dt in schedule]
+    assert times[0] == pytest.approx(1.0)
+    assert times[-1] == pytest.approx(0.04)
+    assert all(left > right for left, right in zip(times, times[1:]))
+    assert sum(dts) == pytest.approx(1.0)
+
+
+def test_ligand_shape_loss_is_zero_for_matching_geometry() -> None:
+    positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    mask = torch.tensor([True, True, True], dtype=torch.bool)
+
+    loss = ligand_shape_loss(positions, positions.clone(), mask)
+
+    assert loss.item() == pytest.approx(0.0)
+
+
+def test_ligand_shape_loss_is_positive_for_distorted_geometry() -> None:
+    clean = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    predicted = clean.clone()
+    predicted[1] = torch.tensor([2.0, 0.0, 0.0])
+    mask = torch.tensor([True, True, True], dtype=torch.bool)
+
+    loss = ligand_shape_loss(predicted, clean, mask)
+
+    assert loss.item() > 0.0
+
+
+def test_saved_args_to_namespace_restores_paths() -> None:
+    args = saved_args_to_namespace(
+        {
+            "protein_path": "data/x/10gs/10gs_protein.pdb",
+            "sample_steps": 50,
+            "sample_time_power": 1.5,
+        }
+    )
+
+    assert args.protein_path == Path("data/x/10gs/10gs_protein.pdb")
+    assert args.sample_steps == 50
+    assert args.sample_time_power == pytest.approx(1.5)
 
 
 def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
