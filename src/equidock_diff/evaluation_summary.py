@@ -184,6 +184,12 @@ def infer_model(command: str) -> str:
     has_complete_frame = "--complete-frame" in command
     has_ligand_global_node = "--ligand-global-node" in command
 
+    if "resample_from_checkpoint" in command:
+        if "frame_backbone" in command or "frame-hetero-backbone" in command:
+            return "heterogeneous frame-based backbone"
+        if "typed_edges" in command or "hetero_edges" in command:
+            return "EGNN + typed edges"
+        return "EGNN baseline"
     if "--hetgnn-backbone" in command or "--frame-hetero-backbone" in command:
         return "heterogeneous frame-based backbone"
     if has_hetero_edges and has_complete_frame and has_ligand_global_node:
@@ -204,7 +210,7 @@ def infer_model(command: str) -> str:
 
 
 def infer_noise_schedule(command: str) -> str:
-    if "--noise-schedule cosine" in command:
+    if "--noise-schedule cosine" in command or "cosine" in command:
         return "cosine"
     return "linear"
 
