@@ -75,7 +75,9 @@ def test_build_remote_runner_command_includes_research_args() -> None:
             "--seed",
             "42",
             "--context-policy",
-            "adaptive",
+            "gated",
+            "--protein-node-budget",
+            "256",
             "--crop-cutoff",
             "8.0",
             "--ligand-protein-clash-weight",
@@ -109,7 +111,8 @@ def test_build_remote_runner_command_includes_research_args() -> None:
     assert "--complex-id 10gs" in command
     assert "--model frame_backbone" in command
     assert "--noise-schedule cosine" in command
-    assert "--context-policy adaptive" in command
+    assert "--context-policy gated" in command
+    assert "--protein-node-budget 256" in command
     assert "--crop-cutoff 8.0" in command
     assert "--ligand-protein-clash-weight 0.02" in command
     assert "--ligand-protein-contact-weight 0.05" in command

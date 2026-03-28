@@ -40,6 +40,7 @@ class RunSpec:
     seed: int
     steps: int
     context_policy: str
+    protein_node_budget: int
     crop_cutoff: float
     sample_steps: int
     sample_time_power: float
@@ -147,7 +148,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--context-policy",
         dest="context_policies",
         action="append",
-        choices=("fixed", "adaptive"),
+        choices=("fixed", "adaptive", "gated"),
+        default=None,
+    )
+    parser.add_argument(
+        "--protein-node-budget",
+        dest="protein_node_budgets",
+        action="append",
+        type=int,
         default=None,
     )
     parser.add_argument(
@@ -309,12 +317,19 @@ def _defaulted(values: list[object] | None, default: object) -> list[object]:
     return [default]
 
 
+def _effective_protein_node_budget(context_policy: str, protein_node_budget: int) -> int:
+    return protein_node_budget if context_policy == "gated" else 256
+
+
 def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
     train_defaults = build_train_parser().parse_args([])
     examples = _resolve_examples(args)
     seeds = [int(value) for value in _defaulted(args.seeds, train_defaults.seed)]
     steps_values = [int(value) for value in _defaulted(args.steps_values, train_defaults.steps)]
     context_policies = [str(value) for value in _defaulted(args.context_policies, train_defaults.context_policy)]
+    protein_node_budgets = [
+        int(value) for value in _defaulted(args.protein_node_budgets, train_defaults.protein_node_budget)
+    ]
     crop_cutoffs = [float(value) for value in _defaulted(args.crop_cutoffs, train_defaults.crop_cutoff)]
     sample_steps_values = [
         int(value) for value in _defaulted(args.sample_steps_values, train_defaults.sample_steps)
@@ -354,37 +369,44 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
             for seed in sorted(seeds):
                 for steps in sorted(steps_values):
                     for context_policy in sorted(context_policies):
-                        for crop_cutoff in sorted(crop_cutoffs):
-                            for sample_steps in sorted(sample_steps_values):
-                                for sample_time_power in sorted(sample_time_powers):
-                                    for ligand_shape_weight in sorted(ligand_shape_weights):
-                                        for ligand_protein_clash_weight in sorted(ligand_protein_clash_weights):
-                                            for ligand_protein_contact_weight in sorted(
-                                                ligand_protein_contact_weights
-                                            ):
-                                                for sample_score_clip in sorted(sample_score_clips):
-                                                    for sample_position_clip in sorted(sample_position_clips):
-                                                        specs.append(
-                                                            RunSpec(
-                                                                complex_id=example.complex_id,
-                                                                protein_path=example.protein_path,
-                                                                ligand_path=example.ligand_path,
-                                                                model=args.model,
-                                                                noise_schedule=args.noise_schedule,
-                                                                seed=seed,
-                                                                steps=steps,
-                                                                context_policy=context_policy,
-                                                                crop_cutoff=crop_cutoff,
-                                                                sample_steps=sample_steps,
-                                                                sample_time_power=sample_time_power,
-                                                                ligand_shape_weight=ligand_shape_weight,
-                                                                ligand_protein_clash_weight=ligand_protein_clash_weight,
-                                                                ligand_protein_contact_weight=ligand_protein_contact_weight,
-                                                                sample_score_clip=sample_score_clip,
-                                                                sample_position_clip=sample_position_clip,
-                                                                use_edge_attention=bool(args.use_edge_attention),
+                        budgets = (
+                            sorted(protein_node_budgets)
+                            if context_policy == "gated"
+                            else [train_defaults.protein_node_budget]
+                        )
+                        for protein_node_budget in budgets:
+                            for crop_cutoff in sorted(crop_cutoffs):
+                                for sample_steps in sorted(sample_steps_values):
+                                    for sample_time_power in sorted(sample_time_powers):
+                                        for ligand_shape_weight in sorted(ligand_shape_weights):
+                                            for ligand_protein_clash_weight in sorted(ligand_protein_clash_weights):
+                                                for ligand_protein_contact_weight in sorted(
+                                                    ligand_protein_contact_weights
+                                                ):
+                                                    for sample_score_clip in sorted(sample_score_clips):
+                                                        for sample_position_clip in sorted(sample_position_clips):
+                                                            specs.append(
+                                                                RunSpec(
+                                                                    complex_id=example.complex_id,
+                                                                    protein_path=example.protein_path,
+                                                                    ligand_path=example.ligand_path,
+                                                                    model=args.model,
+                                                                    noise_schedule=args.noise_schedule,
+                                                                    seed=seed,
+                                                                    steps=steps,
+                                                                    context_policy=context_policy,
+                                                                    protein_node_budget=protein_node_budget,
+                                                                    crop_cutoff=crop_cutoff,
+                                                                    sample_steps=sample_steps,
+                                                                    sample_time_power=sample_time_power,
+                                                                    ligand_shape_weight=ligand_shape_weight,
+                                                                    ligand_protein_clash_weight=ligand_protein_clash_weight,
+                                                                    ligand_protein_contact_weight=ligand_protein_contact_weight,
+                                                                    sample_score_clip=sample_score_clip,
+                                                                    sample_position_clip=sample_position_clip,
+                                                                    use_edge_attention=bool(args.use_edge_attention),
+                                                                )
                                                             )
-                                                        )
     return sorted(
         specs,
         key=lambda item: (
@@ -394,6 +416,7 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
             item.seed,
             item.steps,
             item.context_policy,
+            item.protein_node_budget,
             item.crop_cutoff,
             item.ligand_shape_weight,
             item.ligand_protein_clash_weight,
@@ -415,6 +438,7 @@ def training_signature(spec: RunSpec) -> tuple[object, ...]:
         spec.seed,
         spec.steps,
         spec.context_policy,
+        spec.protein_node_budget,
         spec.crop_cutoff,
         spec.ligand_shape_weight,
         spec.ligand_protein_clash_weight,
@@ -428,6 +452,7 @@ def run_name_for_spec(spec: RunSpec) -> str:
         f"{spec.complex_id}_{spec.model}_{spec.noise_schedule}"
         f"_seed{spec.seed}_steps{spec.steps}"
         f"_ctx{spec.context_policy}"
+        f"_pnb{spec.protein_node_budget}"
         f"_crop{_float_token(spec.crop_cutoff)}"
         f"_sample{spec.sample_steps}"
         f"_time{_float_token(spec.sample_time_power)}"
@@ -443,7 +468,7 @@ def run_name_for_spec(spec: RunSpec) -> str:
 def checkpoint_name_for_spec(spec: RunSpec) -> str:
     return (
         f"{spec.complex_id}_{spec.model}_{spec.noise_schedule}"
-        f"_seed{spec.seed}_steps{spec.steps}_ctx{spec.context_policy}_crop{_float_token(spec.crop_cutoff)}"
+        f"_seed{spec.seed}_steps{spec.steps}_ctx{spec.context_policy}_pnb{spec.protein_node_budget}_crop{_float_token(spec.crop_cutoff)}"
         f"_shape{_float_token(spec.ligand_shape_weight)}"
         f"_clash{_float_token(spec.ligand_protein_clash_weight)}"
         f"_contact{_float_token(spec.ligand_protein_contact_weight)}"
@@ -537,6 +562,8 @@ def _train_argv(
         str(spec.steps),
         "--context-policy",
         spec.context_policy,
+        "--protein-node-budget",
+        str(spec.protein_node_budget),
         "--crop-cutoff",
         str(spec.crop_cutoff),
         "--sample-steps",

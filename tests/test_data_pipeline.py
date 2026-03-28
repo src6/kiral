@@ -7,6 +7,7 @@ import torch
 
 from equidock_diff.data.pipeline import (
     GraphBatch,
+    gate_protein_nodes,
     build_complete_edge_index,
     build_graph_batch,
     build_radius_edge_index,
@@ -209,6 +210,99 @@ def test_load_protein_ligand_graph_adaptive_context_records_resolved_cutoff(tmp_
 
     assert batch.resolved_crop_cutoff is not None
     assert 6.0 <= batch.resolved_crop_cutoff <= 10.0
+
+
+def test_gate_protein_nodes_keeps_all_ligand_nodes_and_honors_budget() -> None:
+    positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 2.0, 0.0],
+            [0.5, 3.0, 0.0],
+            [0.5, 7.0, 0.0],
+            [0.5, 8.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    ligand_mask = torch.tensor([True, True, False, False, False, False])
+    crop_mask = torch.tensor([True, True, True, True, True, True])
+
+    gated_mask, retained = gate_protein_nodes(
+        positions,
+        ligand_mask,
+        crop_mask,
+        protein_node_budget=2,
+    )
+
+    assert torch.equal(gated_mask[:2], torch.tensor([True, True]))
+    assert retained == 2
+    assert int((gated_mask & ~ligand_mask).sum().item()) == 2
+    assert gated_mask.tolist() == [True, True, True, True, False, False]
+
+
+def test_gate_protein_nodes_is_deterministic_and_keeps_all_when_under_budget() -> None:
+    positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 2.0, 0.0],
+            [0.5, 2.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    ligand_mask = torch.tensor([True, True, False, False])
+    crop_mask = torch.tensor([True, True, True, True])
+
+    first_mask, first_retained = gate_protein_nodes(
+        positions,
+        ligand_mask,
+        crop_mask,
+        protein_node_budget=4,
+    )
+    second_mask, second_retained = gate_protein_nodes(
+        positions,
+        ligand_mask,
+        crop_mask,
+        protein_node_budget=4,
+    )
+
+    assert torch.equal(first_mask, second_mask)
+    assert first_retained == second_retained == 2
+
+
+def test_build_graph_batch_gated_remaps_edges_and_records_retained_protein_nodes() -> None:
+    node_features = torch.zeros(6, 16, dtype=torch.float32)
+    positions = torch.tensor(
+        [
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 3.0, 0.0],
+            [0.0, 7.0, 0.0],
+            [0.0, 8.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    ligand_mask = torch.tensor([True, True, False, False, False, False])
+    ligand_bond_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
+    edge_index = build_complete_edge_index(6, device=torch.device("cpu"))
+
+    batch = build_graph_batch(
+        node_features,
+        positions,
+        edge_index,
+        ligand_mask,
+        ligand_bond_index=ligand_bond_index,
+        cutoff=10.0,
+        context_policy="gated",
+        protein_node_budget=2,
+    )
+
+    assert batch.node_features.shape[0] == 4
+    assert batch.retained_protein_nodes == 2
+    assert batch.ligand_bond_index is not None
+    assert torch.all(batch.ligand_bond_index < 2)
+    assert int((batch.node_features[:, -1] <= 0.5).sum().item()) == 2
 
 
 def test_load_split_complex_ids_ignores_comments_and_blank_lines(tmp_path: Path) -> None:

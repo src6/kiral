@@ -55,6 +55,7 @@ class _Args:
     ligand_path = None
     crop_cutoff = 10.0
     context_policy = "fixed"
+    protein_node_budget = 256
     edge_cutoff = 4.5
     batch_size = 1
     num_nodes = 8
@@ -246,7 +247,7 @@ def test_training_step_is_finite_for_real_pair_graph(tmp_path: Path) -> None:
     real_args.ligand_path = ligand_path
 
     device = torch.device("cpu")
-    node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_graph_inputs(real_args, device)
+    node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_graph_inputs(real_args, device)
     model = make_model(real_args, device, node_dim=node_features.shape[1])
 
     loss, beta_t = training_step(
@@ -262,6 +263,7 @@ def test_training_step_is_finite_for_real_pair_graph(tmp_path: Path) -> None:
     assert node_features.shape[1] == 17
     assert ligand_bond_index is not None
     assert resolved_crop_cutoff == pytest.approx(10.0)
+    assert retained_protein_nodes is not None
     assert torch.isfinite(loss)
     assert beta_t > 0.0
 
@@ -282,6 +284,7 @@ def test_load_graph_inputs_uses_cache_for_real_pair_graph(monkeypatch: pytest.Mo
         edge_cutoff: float,
         cache_dir: Path | None,
         context_policy: str,
+        protein_node_budget: int,
     ):
         captured["protein_path"] = protein_path
         captured["ligand_path"] = ligand_path
@@ -289,6 +292,7 @@ def test_load_graph_inputs_uses_cache_for_real_pair_graph(monkeypatch: pytest.Mo
         captured["edge_cutoff"] = edge_cutoff
         captured["cache_dir"] = cache_dir
         captured["context_policy"] = context_policy
+        captured["protein_node_budget"] = protein_node_budget
         return type(
             "_Batch",
             (),
@@ -298,12 +302,13 @@ def test_load_graph_inputs_uses_cache_for_real_pair_graph(monkeypatch: pytest.Mo
                 "edge_index": torch.zeros((2, 0), dtype=torch.long),
                 "ligand_bond_index": None,
                 "resolved_crop_cutoff": 10.0,
+                "retained_protein_nodes": 1,
             },
         )()
 
     monkeypatch.setattr("equidock_diff.train.load_protein_ligand_graph_cached", _fake_cached_loader)
 
-    node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_graph_inputs(
+    node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_graph_inputs(
         _RealArgs(),
         torch.device("cpu"),
     )
@@ -313,8 +318,10 @@ def test_load_graph_inputs_uses_cache_for_real_pair_graph(monkeypatch: pytest.Mo
     assert edge_index.shape == (2, 0)
     assert ligand_bond_index is None
     assert resolved_crop_cutoff == pytest.approx(10.0)
+    assert retained_protein_nodes == 1
     assert captured["cache_dir"] == Path("graph_cache")
     assert captured["context_policy"] == "fixed"
+    assert captured["protein_node_budget"] == 256
 
 
 def test_training_step_is_finite_with_cosine_schedule() -> None:
@@ -834,7 +841,8 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
         sample_steps = 10
         crop_cutoff = 8.0
         edge_cutoff = 4.5
-        context_policy = "adaptive"
+        context_policy = "gated"
+        protein_node_budget = 256
 
     log_path = tmp_path / "experiment.md"
     output_path = tmp_path / "sample.pdb"
@@ -858,6 +866,7 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
         plot_path=plot_path,
         extra_metrics={"aligned_ligand_rmsd": 1.2345},
         resolved_crop_cutoff=9.25,
+        retained_protein_nodes=123,
     )
 
     contents = log_path.read_text(encoding="utf-8")
@@ -867,7 +876,9 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
     assert "- Node count: `147`" in contents
     assert "- Edge count: `2992`" in contents
     assert "- Final loss: `0.250000` at step `5`" in contents
-    assert "- Context policy: `adaptive`" in contents
+    assert "- Context policy: `gated`" in contents
+    assert "- Protein node budget: `256`" in contents
+    assert "- Retained protein nodes: `123`" in contents
     assert "- Resolved crop cutoff: `9.250000`" in contents
     assert "- Aligned Ligand Rmsd: `1.234500`" in contents
     assert str(output_path) in contents

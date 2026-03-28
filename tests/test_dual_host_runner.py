@@ -167,7 +167,9 @@ def test_build_runner_argvs_include_crop_cutoff_and_cpu_policy(tmp_path: Path) -
             "--noise-schedule",
             "cosine",
             "--context-policy",
-            "adaptive",
+            "gated",
+            "--protein-node-budget",
+            "256",
             "--crop-cutoff",
             "8.0",
             "--crop-cutoff",
@@ -194,7 +196,9 @@ def test_build_runner_argvs_include_crop_cutoff_and_cpu_policy(tmp_path: Path) -
     assert "--device-policy" in local_argv
     assert "canonical" in local_argv
     assert "--context-policy" in local_argv
+    assert "--protein-node-budget" in local_argv
     assert "--crop-cutoff" in local_argv
+    assert "--protein-node-budget" in remote_argv
     assert "--crop-cutoff" in remote_argv
     assert "--ligand-protein-contact-weight" in local_argv
     assert "--ligand-protein-contact-weight" in remote_argv

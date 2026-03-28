@@ -96,6 +96,7 @@ RESUME_COMPAT_KEYS = (
     "protein_path",
     "ligand_path",
     "context_policy",
+    "protein_node_budget",
     "crop_cutoff",
     "edge_cutoff",
     "batch_size",
@@ -134,9 +135,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--context-policy",
-        choices=("fixed", "adaptive"),
+        choices=("fixed", "adaptive", "gated"),
         default="fixed",
-        help="Whether to use the fixed crop cutoff or derive it adaptively from ligand span",
+        help="How to select protein context for the real-pair path",
+    )
+    parser.add_argument(
+        "--protein-node-budget",
+        type=int,
+        default=256,
+        help="Maximum retained protein nodes when --context-policy gated is used",
     )
     parser.add_argument(
         "--edge-cutoff",
@@ -420,7 +427,7 @@ def make_model_for_node_dim(
 def load_graph_inputs(
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, float | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, float | None, int | None]:
     if dataset_mode_enabled(args):
         raise ValueError("load_graph_inputs does not support dataset mode.")
 
@@ -437,6 +444,7 @@ def load_graph_inputs(
             edge_cutoff=getattr(args, "edge_cutoff", 4.5),
             cache_dir=getattr(args, "dataset_cache_dir", None),
             context_policy=getattr(args, "context_policy", "fixed"),
+            protein_node_budget=getattr(args, "protein_node_budget", 256),
         )
         return (
             batch.node_features.to(device),
@@ -444,10 +452,11 @@ def load_graph_inputs(
             batch.edge_index.to(device),
             None if batch.ligand_bond_index is None else batch.ligand_bond_index.to(device),
             batch.resolved_crop_cutoff,
+            batch.retained_protein_nodes,
         )
 
     node_features, positions, edge_index = build_synthetic_graph(args.num_nodes, args.batch_size, device)
-    return node_features, positions, edge_index, None, None
+    return node_features, positions, edge_index, None, None, None
 
 
 def _checkpoint_arg_value(value: object) -> object:
@@ -522,7 +531,7 @@ def load_dataset_example(
     example: ProteinLigandPaths,
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, float | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, float | None, int | None]:
     batch = load_protein_ligand_graph_cached(
         example.protein_path,
         example.ligand_path,
@@ -530,6 +539,7 @@ def load_dataset_example(
         edge_cutoff=args.edge_cutoff,
         cache_dir=args.dataset_cache_dir,
         context_policy=args.context_policy,
+        protein_node_budget=args.protein_node_budget,
     )
     return (
         batch.node_features.to(device),
@@ -537,6 +547,7 @@ def load_dataset_example(
         batch.edge_index.to(device),
         None if batch.ligand_bond_index is None else batch.ligand_bond_index.to(device),
         batch.resolved_crop_cutoff,
+        batch.retained_protein_nodes,
     )
 
 
@@ -1198,6 +1209,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--ligand-protein-clash-weight must be non-negative.")
     if args.ligand_protein_contact_weight < 0.0:
         raise ValueError("--ligand-protein-contact-weight must be non-negative.")
+    if args.protein_node_budget <= 0:
+        raise ValueError("--protein-node-budget must be positive.")
     if args.use_edge_attention and not args.frame_hetero_backbone:
         raise ValueError("--use-edge-attention currently requires --frame-hetero-backbone.")
     if dataset_mode_enabled(args) and (args.protein_path is not None or args.ligand_path is not None):
@@ -1209,15 +1222,16 @@ def main(argv: list[str] | None = None) -> int:
     dataset_examples = build_dataset_examples(args) if dataset_mode_enabled(args) else None
     source_ids = None if dataset_examples is None else [entry.complex_id for entry in dataset_examples]
     resolved_crop_cutoff: float | None = None
+    retained_protein_nodes: int | None = None
     if dataset_examples is not None:
-        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_dataset_example(
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_dataset_example(
             dataset_examples[0],
             args,
             device,
         )
         graph_source = "dataset"
     else:
-        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_graph_inputs(args, device)
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_graph_inputs(args, device)
         graph_source = "real_pair" if args.protein_path is not None else "synthetic"
 
     if args.dry_run:
@@ -1271,7 +1285,7 @@ def main(argv: list[str] | None = None) -> int:
         current_complex_id = None
         if dataset_examples is not None:
             current_example = dataset_example_for_step(dataset_examples, step_idx)
-            node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_dataset_example(
+            node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_dataset_example(
                 current_example,
                 args,
                 device,
@@ -1359,7 +1373,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if dataset_examples is not None:
         sample_example = dataset_example_for_step(dataset_examples, args.steps)
-        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff = load_dataset_example(
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_dataset_example(
             sample_example,
             args,
             device,
@@ -1470,6 +1484,7 @@ def main(argv: list[str] | None = None) -> int:
             plot_path=args.plot_output if plot_written else None,
             extra_metrics=extra_metrics or None,
             resolved_crop_cutoff=resolved_crop_cutoff,
+            retained_protein_nodes=retained_protein_nodes,
         )
         print(f"experiment_log={args.experiment_log}")
     return 0
