@@ -32,6 +32,7 @@ from equidock_diff.utils.artifacts import (
     write_pdb,
     write_trajectory_pdb,
 )
+from equidock_diff.utils.chemistry import ATOM_CLASH_RADII, ATOM_SYMBOLS
 from equidock_diff.utils.geometry import aligned_rmsd, random_rotation_matrix
 from equidock_diff.utils.plotting import maybe_write_plot
 
@@ -84,6 +85,7 @@ RESUME_COMPAT_KEYS = (
     "learning_rate",
     "ligand_bond_weight",
     "ligand_shape_weight",
+    "ligand_protein_clash_weight",
     "beta_min",
     "beta_max",
     "noise_schedule",
@@ -173,6 +175,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Optional weight for ligand local shape preservation",
+    )
+    parser.add_argument(
+        "--ligand-protein-clash-weight",
+        type=float,
+        default=0.0,
+        help="Optional weight for ligand-protein soft clash avoidance",
     )
     parser.add_argument("--beta-min", type=float, default=0.1, help="VP-SDE beta minimum")
     parser.add_argument("--beta-max", type=float, default=2.0, help="VP-SDE beta maximum")
@@ -675,7 +683,7 @@ def training_step(
     egnn_config = getattr(model_config, "egnn", None)
     if egnn_config is not None:
         frame_hetero_backbone = bool(getattr(egnn_config, "use_frame_hetero_backbone", False))
-    loss, beta_t, _, _, _ = training_step_with_breakdown(
+    loss, beta_t, _, _, _, _ = training_step_with_breakdown(
         model,
         node_features,
         clean_positions,
@@ -685,6 +693,7 @@ def training_step(
         beta_max,
         ligand_bond_weight=0.0,
         ligand_shape_weight=0.0,
+        ligand_protein_clash_weight=0.0,
         frame_hetero_backbone=frame_hetero_backbone,
         noise_schedule=noise_schedule,
         cosine_offset=cosine_offset,
@@ -740,6 +749,63 @@ def ligand_shape_loss(
     return torch.mean((predicted_dist[keep] - clean_dist[keep]) ** 2)
 
 
+_ATOM_TYPE_DIM = len(ATOM_SYMBOLS)
+_OTHER_ATOM_INDEX = _ATOM_TYPE_DIM - 1
+_ATOM_CLASH_RADIUS_VALUES = torch.tensor(
+    [ATOM_CLASH_RADII[symbol] for symbol in ATOM_SYMBOLS],
+    dtype=torch.float32,
+)
+
+
+def _node_clash_radii(
+    node_features: torch.Tensor,
+) -> torch.Tensor | None:
+    if node_features.size(-1) < _ATOM_TYPE_DIM:
+        return None
+    atom_features = node_features[:, :_ATOM_TYPE_DIM]
+    if atom_features.numel() == 0:
+        return None
+    row_sums = atom_features.sum(dim=-1)
+    is_binary = torch.all((atom_features == 0.0) | (atom_features == 1.0))
+    if not bool(is_binary and torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-6)):
+        return None
+    atom_indices = torch.argmax(atom_features, dim=-1)
+    radii = _ATOM_CLASH_RADIUS_VALUES.to(device=node_features.device, dtype=node_features.dtype)
+    return radii[atom_indices]
+
+
+def ligand_protein_clash_loss(
+    predicted_positions: torch.Tensor,
+    node_features: torch.Tensor,
+    ligand_mask: torch.Tensor | None,
+    *,
+    margin: float = 0.2,
+) -> torch.Tensor:
+    if ligand_mask is None or not bool(ligand_mask.any()):
+        return predicted_positions.new_zeros(())
+    protein_mask = ~ligand_mask
+    if not bool(protein_mask.any()):
+        return predicted_positions.new_zeros(())
+
+    radii = _node_clash_radii(node_features)
+    if radii is None:
+        return predicted_positions.new_zeros(())
+
+    ligand_positions = predicted_positions[ligand_mask]
+    protein_positions = predicted_positions[protein_mask]
+    ligand_radii = radii[ligand_mask]
+    protein_radii = radii[protein_mask]
+    if ligand_positions.numel() == 0 or protein_positions.numel() == 0:
+        return predicted_positions.new_zeros(())
+
+    distances = torch.cdist(ligand_positions, protein_positions)
+    clash_thresholds = ligand_radii.unsqueeze(1) + protein_radii.unsqueeze(0) + margin
+    violation = torch.clamp_min(clash_thresholds - distances, 0.0)
+    if not bool((violation > 0).any()):
+        return predicted_positions.new_zeros(())
+    return torch.mean(violation.square())
+
+
 def training_step_with_breakdown(
     model: nn.Module,
     node_features: torch.Tensor,
@@ -751,16 +817,18 @@ def training_step_with_breakdown(
     *,
     ligand_bond_weight: float,
     ligand_shape_weight: float,
+    ligand_protein_clash_weight: float,
     frame_hetero_backbone: bool,
     noise_schedule: str = "linear",
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
-) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
         0.05, 0.95
     )
+    detected_ligand_mask = infer_ligand_mask(node_features)
     if frame_hetero_backbone:
-        ligand_mask = infer_ligand_mask(node_features)
+        ligand_mask = detected_ligand_mask
         noised_positions = clean_positions.clone()
         noised_positions[ligand_mask], beta_t = noised_positions_for_schedule(
             clean_positions[ligand_mask],
@@ -794,8 +862,9 @@ def training_step_with_breakdown(
         score_loss = torch.mean((predicted_score - target_score) ** 2)
     bond_loss = clean_positions.new_zeros(())
     shape_loss = clean_positions.new_zeros(())
+    clash_loss = clean_positions.new_zeros(())
     predicted_positions = None
-    if ligand_bond_weight > 0.0 or ligand_shape_weight > 0.0:
+    if ligand_bond_weight > 0.0 or ligand_shape_weight > 0.0 or ligand_protein_clash_weight > 0.0:
         predicted_positions = noised_positions + predicted_score
     if ligand_bond_weight > 0.0:
         assert predicted_positions is not None
@@ -811,8 +880,20 @@ def training_step_with_breakdown(
             clean_positions,
             ligand_mask,
         )
-    total_loss = score_loss + ligand_bond_weight * bond_loss + ligand_shape_weight * shape_loss
-    return total_loss, float(beta_t.item()), score_loss, bond_loss, shape_loss
+    if ligand_protein_clash_weight > 0.0:
+        assert predicted_positions is not None
+        clash_loss = ligand_protein_clash_loss(
+            predicted_positions,
+            node_features,
+            detected_ligand_mask,
+        )
+    total_loss = (
+        score_loss
+        + ligand_bond_weight * bond_loss
+        + ligand_shape_weight * shape_loss
+        + ligand_protein_clash_weight * clash_loss
+    )
+    return total_loss, float(beta_t.item()), score_loss, bond_loss, shape_loss, clash_loss
 
 
 def build_sample_schedule(
@@ -1110,7 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
             current_complex_id = current_example.complex_id
 
         optimizer.zero_grad(set_to_none=True)
-        loss, beta_t, score_loss, bond_loss, shape_loss = training_step_with_breakdown(
+        loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss = training_step_with_breakdown(
             model,
             node_features,
             positions,
@@ -1120,6 +1201,7 @@ def main(argv: list[str] | None = None) -> int:
             args.beta_max,
             ligand_bond_weight=args.ligand_bond_weight,
             ligand_shape_weight=args.ligand_shape_weight,
+            ligand_protein_clash_weight=args.ligand_protein_clash_weight,
             frame_hetero_backbone=args.frame_hetero_backbone,
             noise_schedule=args.noise_schedule,
             cosine_offset=args.cosine_offset,
@@ -1141,6 +1223,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.ligand_shape_weight > 0.0:
                 line += f" shape_loss={shape_loss.item():.6f}"
+            if args.ligand_protein_clash_weight > 0.0:
+                line += f" clash_loss={clash_loss.item():.6f}"
             print(line)
 
         if checkpoint_output is not None and args.checkpoint_every > 0:

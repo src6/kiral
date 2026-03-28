@@ -35,6 +35,20 @@ BOND_STEREO_TO_INDEX = {
 ATOM_FEATURE_DIM = 16
 BOND_FEATURE_DIM = 8
 
+# Approximate van der Waals radii in Angstrom used for soft clash checks.
+ATOM_CLASH_RADII = {
+    "C": 1.70,
+    "N": 1.55,
+    "O": 1.52,
+    "S": 1.80,
+    "P": 1.80,
+    "F": 1.47,
+    "Cl": 1.75,
+    "Br": 1.85,
+    "I": 1.98,
+    "OTHER": 1.70,
+}
+
 SkipReason = Literal[
     "parse_failed",
     "sanitize_failed",
