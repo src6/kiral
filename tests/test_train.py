@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from equidock_diff.diffusion.schedules import cosine_signal_amplitude
 from equidock_diff.utils.artifacts import (
     ligand_mask_from_features,
     write_experiment_log,
@@ -18,6 +19,7 @@ from equidock_diff.train import (
     load_checkpoint,
     load_graph_inputs,
     make_model,
+    noised_positions_for_schedule,
     save_checkpoint,
     sample_positions,
     training_step,
@@ -252,6 +254,43 @@ def test_training_step_is_finite_with_cosine_schedule() -> None:
 
     assert torch.isfinite(loss)
     assert beta_t > 0.0
+
+
+def test_noised_positions_for_schedule_uses_alpha_bar_coefficients_for_cosine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t = torch.tensor([0.5], dtype=torch.float32)
+    clean_positions = torch.tensor([[2.0, -4.0, 6.0]], dtype=torch.float32)
+    alpha_bar = cosine_signal_amplitude(t, offset=0.008, nu=1.5)
+    expected_signal_scale = torch.sqrt(alpha_bar)
+    expected_sigma = torch.sqrt(1.0 - alpha_bar)
+
+    monkeypatch.setattr(torch, "randn_like", lambda tensor: torch.zeros_like(tensor))
+    noised_positions, _ = noised_positions_for_schedule(
+        clean_positions,
+        t,
+        beta_min=0.1,
+        beta_max=2.0,
+        noise_schedule="cosine",
+        cosine_offset=0.008,
+        cosine_nu=1.5,
+    )
+    assert torch.allclose(noised_positions, expected_signal_scale.unsqueeze(-1) * clean_positions)
+
+    monkeypatch.setattr(torch, "randn_like", lambda tensor: torch.ones_like(tensor))
+    noised_positions, _ = noised_positions_for_schedule(
+        torch.zeros_like(clean_positions),
+        t,
+        beta_min=0.1,
+        beta_max=2.0,
+        noise_schedule="cosine",
+        cosine_offset=0.008,
+        cosine_nu=1.5,
+    )
+    assert torch.allclose(
+        noised_positions,
+        expected_sigma.unsqueeze(-1) * torch.ones_like(clean_positions),
+    )
 
 
 def test_sample_positions_stays_finite_with_clipping() -> None:

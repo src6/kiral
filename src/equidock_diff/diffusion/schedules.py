@@ -25,6 +25,8 @@ def cosine_signal_amplitude(
     offset: float = DEFAULT_COSINE_OFFSET,
     nu: float = DEFAULT_COSINE_NU,
 ) -> torch.Tensor:
+    """Return the cosine alpha_bar schedule used by the VP-SDE forward process."""
+
     if nu <= 0.0:
         raise ValueError("cosine nu must be positive.")
     if offset < 0.0:
