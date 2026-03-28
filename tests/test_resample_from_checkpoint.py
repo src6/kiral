@@ -19,6 +19,7 @@ class _Args:
     ligand_path = None
     crop_cutoff = 10.0
     context_policy = "fixed"
+    protein_node_budget = 256
     edge_cutoff = 4.5
     hidden_dim = 32
     num_layers = 2

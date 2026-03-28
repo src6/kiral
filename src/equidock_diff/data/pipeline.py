@@ -24,6 +24,7 @@ class GraphBatch:
     crop_mask: torch.Tensor | None = None
     ligand_bond_index: torch.Tensor | None = None
     resolved_crop_cutoff: float | None = None
+    retained_protein_nodes: int | None = None
 
     @property
     def mask(self) -> torch.Tensor | None:
@@ -31,7 +32,7 @@ class GraphBatch:
         return self.crop_mask
 
 
-GRAPH_CACHE_FORMAT_VERSION = 1
+GRAPH_CACHE_FORMAT_VERSION = 2
 
 
 def _normalize_element(symbol: str) -> str:
@@ -131,6 +132,7 @@ def move_graph_batch(batch: GraphBatch, device: torch.device) -> GraphBatch:
         if batch.ligand_bond_index is None
         else batch.ligand_bond_index.to(device),
         resolved_crop_cutoff=batch.resolved_crop_cutoff,
+        retained_protein_nodes=batch.retained_protein_nodes,
     )
 
 
@@ -145,6 +147,8 @@ def graph_cache_path(
     *,
     cutoff: float,
     edge_cutoff: float,
+    context_policy: str = "fixed",
+    protein_node_budget: int = 256,
 ) -> Path:
     protein = Path(protein_path)
     ligand = Path(ligand_path)
@@ -159,8 +163,10 @@ def graph_cache_path(
             str(ligand.resolve()),
             str(ligand_stat.st_mtime_ns),
             str(ligand_stat.st_size),
+            context_policy,
             f"{cutoff:.4f}",
             f"{edge_cutoff:.4f}",
+            str(protein_node_budget),
         ]
     )
     digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16]
@@ -178,6 +184,7 @@ def _serialize_graph_batch(batch: GraphBatch) -> dict[str, object]:
         "crop_mask": cpu_batch.crop_mask,
         "ligand_bond_index": cpu_batch.ligand_bond_index,
         "resolved_crop_cutoff": cpu_batch.resolved_crop_cutoff,
+        "retained_protein_nodes": cpu_batch.retained_protein_nodes,
     }
 
 
@@ -194,6 +201,7 @@ def _deserialize_graph_batch(payload: dict[str, object]) -> GraphBatch:
         crop_mask=payload.get("crop_mask", payload.get("mask")),  # type: ignore[arg-type]
         ligand_bond_index=payload.get("ligand_bond_index"),  # type: ignore[arg-type]
         resolved_crop_cutoff=payload.get("resolved_crop_cutoff"),  # type: ignore[arg-type]
+        retained_protein_nodes=payload.get("retained_protein_nodes"),  # type: ignore[arg-type]
     )
 
 
@@ -251,12 +259,43 @@ def resolve_context_crop_cutoff(
     context_policy: str,
     cutoff: float,
 ) -> float:
-    if context_policy == "fixed":
+    if context_policy in {"fixed", "gated"}:
         return float(cutoff)
     if context_policy != "adaptive":
         raise ValueError(f"Unsupported context policy: {context_policy}")
     adaptive_crop = ligand_max_span(ligand_positions) * 0.9 + 2.0
     return float(min(10.0, max(6.0, adaptive_crop)))
+
+
+def gate_protein_nodes(
+    positions: torch.Tensor,
+    ligand_mask: torch.Tensor,
+    crop_mask: torch.Tensor,
+    *,
+    protein_node_budget: int,
+) -> tuple[torch.Tensor, int]:
+    if protein_node_budget <= 0:
+        raise ValueError("protein_node_budget must be positive.")
+
+    protein_mask = ~ligand_mask
+    cropped_protein_mask = crop_mask & protein_mask
+    cropped_protein_indices = torch.where(cropped_protein_mask)[0]
+    cropped_count = int(cropped_protein_indices.numel())
+    if cropped_count <= protein_node_budget:
+        return crop_mask | ligand_mask, cropped_count
+
+    ligand_positions = positions[ligand_mask]
+    protein_positions = positions[cropped_protein_indices]
+    if ligand_positions.numel() == 0 or protein_positions.numel() == 0:
+        return crop_mask | ligand_mask, cropped_count
+
+    min_distances = torch.cdist(protein_positions, ligand_positions).min(dim=1).values
+    ranked_indices = torch.argsort(min_distances, stable=True)
+    kept_protein_indices = cropped_protein_indices[ranked_indices[:protein_node_budget]]
+
+    gated_mask = ligand_mask.clone()
+    gated_mask[kept_protein_indices] = True
+    return gated_mask, protein_node_budget
 
 def build_graph_batch(
     node_features: torch.Tensor,
@@ -266,6 +305,8 @@ def build_graph_batch(
     ligand_bond_index: torch.Tensor | None = None,
     cutoff: float = 10.0,
     resolved_crop_cutoff: float | None = None,
+    context_policy: str = "fixed",
+    protein_node_budget: int = 256,
 ) -> GraphBatch:
     if mask is None:
         raise ValueError("build_graph_batch requires a ligand mask.")
@@ -282,7 +323,16 @@ def build_graph_batch(
     # Apply spatial filtering
     crop_mask = crop_protein_by_distance(centered_pos, ligand_mask, cutoff=cutoff)
     # Make sure ligand isn't cropped out of its own batch
-    final_mask = crop_mask | ligand_mask
+    if context_policy == "gated":
+        final_mask, retained_protein_nodes = gate_protein_nodes(
+            centered_pos,
+            ligand_mask,
+            crop_mask,
+            protein_node_budget=protein_node_budget,
+        )
+    else:
+        final_mask = crop_mask | ligand_mask
+        retained_protein_nodes = int((final_mask & ~ligand_mask).sum().item())
 
     # Filter the edges
     src, dst = edge_index
@@ -317,6 +367,7 @@ def build_graph_batch(
         crop_mask=final_mask,  # Original-node crop mask retained for debugging/tests.
         ligand_bond_index=remapped_ligand_bond_index,
         resolved_crop_cutoff=cutoff if resolved_crop_cutoff is None else resolved_crop_cutoff,
+        retained_protein_nodes=retained_protein_nodes,
     )
 
 
@@ -327,6 +378,7 @@ def load_protein_ligand_graph(
     cutoff: float = 10.0,
     edge_cutoff: float = 4.5,
     context_policy: str = "fixed",
+    protein_node_budget: int = 256,
 ) -> GraphBatch:
     ligand_path = Path(ligand_path)
     ligand_graph = _require_ligand_graph(featurize_ligand(ligand_path), ligand_path)
@@ -351,6 +403,8 @@ def load_protein_ligand_graph(
         ligand_bond_index=ligand_graph.edge_index,
         cutoff=resolved_cutoff,
         resolved_crop_cutoff=resolved_cutoff,
+        context_policy=context_policy,
+        protein_node_budget=protein_node_budget,
     )
 
 
@@ -362,7 +416,9 @@ def load_protein_ligand_graph_cached(
     edge_cutoff: float = 4.5,
     cache_dir: Path | None = None,
     context_policy: str = "fixed",
+    protein_node_budget: int = 256,
 ) -> GraphBatch:
+    effective_protein_node_budget = protein_node_budget if context_policy == "gated" else 256
     if cache_dir is None:
         return load_protein_ligand_graph(
             protein_path,
@@ -370,6 +426,7 @@ def load_protein_ligand_graph_cached(
             cutoff=cutoff,
             edge_cutoff=edge_cutoff,
             context_policy=context_policy,
+            protein_node_budget=effective_protein_node_budget,
         )
 
     effective_cutoff = cutoff
@@ -388,10 +445,12 @@ def load_protein_ligand_graph_cached(
         ligand_path,
         cutoff=effective_cutoff,
         edge_cutoff=edge_cutoff,
+        context_policy=context_policy,
+        protein_node_budget=effective_protein_node_budget,
     )
     if cache_path.exists():
         cached_batch = load_graph_batch_cache(cache_path)
-        if cached_batch.resolved_crop_cutoff is None:
+        if cached_batch.resolved_crop_cutoff is None or cached_batch.retained_protein_nodes is None:
             return GraphBatch(
                 node_features=cached_batch.node_features,
                 positions=cached_batch.positions,
@@ -399,6 +458,7 @@ def load_protein_ligand_graph_cached(
                 crop_mask=cached_batch.crop_mask,
                 ligand_bond_index=cached_batch.ligand_bond_index,
                 resolved_crop_cutoff=effective_cutoff,
+                retained_protein_nodes=int((cached_batch.node_features[:, -1] <= 0.5).sum().item()),
             )
         return cached_batch
 
@@ -408,6 +468,7 @@ def load_protein_ligand_graph_cached(
         cutoff=cutoff,
         edge_cutoff=edge_cutoff,
         context_policy=context_policy,
+        protein_node_budget=effective_protein_node_budget,
     )
     write_graph_batch_cache(cache_path, batch)
     return batch

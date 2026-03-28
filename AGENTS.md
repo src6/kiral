@@ -192,12 +192,18 @@ Implemented relevant tooling and features include:
 - `sampler_diagnostics_json`
 - `ligand_shape_weight`
 - `ligand_protein_clash_weight`
+- `context_policy`
+- `protein_node_budget`
+- `ligand_protein_contact_weight`
 
 Recent research conclusion:
 
 - accepted frame-backbone cosine improvement is statistically significant, but narrowly
-- later sampler and geometry follow-ups did not beat the accepted recipe
-- next active experimental direction is the ligand-protein clash prior
+- later sampler, geometry, clash, contact, and gated-context follow-ups did not beat the accepted recipe
+- adaptive context is the strongest recent non-promoted hard-case control
+- deterministic protein-node gating (`K=192`) is the strongest new gated result, but it still failed the hard-case promotion gate
+- generic edge attention remains deprioritized after underperforming the crop-10 control
+- there is no currently promoted successor to the accepted frame-backbone cosine recipe
 
 ## Token-Saving Guidance
 
@@ -212,6 +218,8 @@ Prefer these assumptions unless contradicted by the task:
 - remote scratch runs should prefer `--max-parallel 2`
 - `docs/training/` should not be rsynced to the mini for scratch runs
 - Muon is out of scope
+- standalone clash/contact sweeps are currently low priority
+- deterministic node gating has already been evaluated; do not restart that sweep unless the architecture or gating signal changes materially
 
 Avoid unnecessary context expansion:
 

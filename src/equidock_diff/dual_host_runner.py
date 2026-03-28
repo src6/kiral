@@ -35,6 +35,7 @@ class ScheduledUnit:
     complex_id: str
     seed: int
     steps: int
+    protein_node_budget: int
     crop_cutoff: float
     planned_runs: tuple[PlannedRun, ...]
     local_output_root: Path
@@ -49,6 +50,7 @@ class UnitStatusRow:
     complex_id: str
     seed: int
     steps: int
+    protein_node_budget: int
     crop_cutoff: float
     planned_actions: str
     status: str
@@ -137,7 +139,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--context-policy",
         dest="context_policies",
         action="append",
-        choices=("fixed", "adaptive"),
+        choices=("fixed", "adaptive", "gated"),
+        default=None,
+    )
+    parser.add_argument(
+        "--protein-node-budget",
+        dest="protein_node_budgets",
+        action="append",
+        type=int,
         default=None,
     )
     parser.add_argument("--crop-cutoff", dest="crop_cutoffs", action="append", type=float, default=None)
@@ -386,6 +395,7 @@ def plan_scheduled_units(args: argparse.Namespace) -> list[ScheduledUnit]:
                 complex_id=group[0].spec.complex_id,
                 seed=group[0].spec.seed,
                 steps=group[0].spec.steps,
+                protein_node_budget=group[0].spec.protein_node_budget,
                 crop_cutoff=group[0].spec.crop_cutoff,
                 planned_runs=group,
                 local_output_root=DEFAULT_LOCAL_RESEARCH_ROOT / subtag,
@@ -414,6 +424,7 @@ def _group_runner_args(unit: ScheduledUnit, *, compare_against: str | None, save
     _append_repeated(argv, "--seed", sorted({spec.seed for spec in specs}))
     _append_repeated(argv, "--steps", sorted({spec.steps for spec in specs}))
     _append_repeated(argv, "--context-policy", sorted({spec.context_policy for spec in specs}))
+    _append_repeated(argv, "--protein-node-budget", sorted({spec.protein_node_budget for spec in specs}))
     _append_repeated(argv, "--crop-cutoff", sorted({spec.crop_cutoff for spec in specs}))
     _append_repeated(argv, "--sample-steps", sorted({spec.sample_steps for spec in specs}))
     _append_repeated(argv, "--sample-time-power", sorted({spec.sample_time_power for spec in specs}))
@@ -516,6 +527,7 @@ def _initial_unit_status(unit: ScheduledUnit, status: str) -> UnitStatusRow:
         complex_id=unit.complex_id,
         seed=unit.seed,
         steps=unit.steps,
+        protein_node_budget=unit.protein_node_budget,
         crop_cutoff=unit.crop_cutoff,
         planned_actions=_planned_actions_summary(unit.planned_runs),
         status=status,
@@ -537,6 +549,7 @@ def _completed_unit_status(unit: ScheduledUnit, metrics: UnitMetrics) -> UnitSta
         complex_id=unit.complex_id,
         seed=unit.seed,
         steps=unit.steps,
+        protein_node_budget=unit.protein_node_budget,
         crop_cutoff=unit.crop_cutoff,
         planned_actions=_planned_actions_summary(unit.planned_runs),
         status="completed" if metrics.failed_runs == 0 else "failed",
@@ -580,6 +593,7 @@ def write_plan_csv(path: Path, units: list[ScheduledUnit]) -> None:
                 "complex_id",
                 "seed",
                 "steps",
+                "protein_node_budget",
                 "crop_cutoff",
                 "planned_actions",
                 "local_output_root",
@@ -595,6 +609,7 @@ def write_plan_csv(path: Path, units: list[ScheduledUnit]) -> None:
                     unit.complex_id,
                     unit.seed,
                     unit.steps,
+                    unit.protein_node_budget,
                     f"{unit.crop_cutoff:.6f}",
                     _planned_actions_summary(unit.planned_runs),
                     unit.local_output_root.as_posix(),
@@ -615,6 +630,7 @@ def write_status_csv(path: Path, rows: list[UnitStatusRow]) -> None:
                 "complex_id",
                 "seed",
                 "steps",
+                "protein_node_budget",
                 "crop_cutoff",
                 "planned_actions",
                 "status",
@@ -637,6 +653,7 @@ def write_status_csv(path: Path, rows: list[UnitStatusRow]) -> None:
                     row.complex_id,
                     row.seed,
                     row.steps,
+                    row.protein_node_budget,
                     f"{row.crop_cutoff:.6f}",
                     row.planned_actions,
                     row.status,

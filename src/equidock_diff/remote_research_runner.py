@@ -64,7 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--context-policy",
         dest="context_policies",
         action="append",
-        choices=("fixed", "adaptive"),
+        choices=("fixed", "adaptive", "gated"),
+        default=None,
+    )
+    parser.add_argument(
+        "--protein-node-budget",
+        dest="protein_node_budgets",
+        action="append",
+        type=int,
         default=None,
     )
     parser.add_argument(
@@ -368,6 +375,8 @@ def build_remote_runner_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--steps", str(steps)])
     for context_policy in _defaulted(args.context_policies):
         argv.extend(["--context-policy", str(context_policy)])
+    for protein_node_budget in _defaulted(args.protein_node_budgets):
+        argv.extend(["--protein-node-budget", str(protein_node_budget)])
     for crop_cutoff in _defaulted(args.crop_cutoffs):
         argv.extend(["--crop-cutoff", str(crop_cutoff)])
     for sample_steps in _defaulted(args.sample_steps_values):
