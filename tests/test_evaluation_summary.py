@@ -35,6 +35,29 @@ def test_infer_model_detects_primary_variants() -> None:
     )
 
 
+def test_infer_model_detects_combined_egnn_variants() -> None:
+    assert (
+        infer_model("uv run python -m equidock_diff.train --hetero-edges --ligand-global-node")
+        == "EGNN + typed edges + ligand context"
+    )
+    assert (
+        infer_model("uv run python -m equidock_diff.train --hetero-edges --complete-frame")
+        == "EGNN + typed edges + complete frames"
+    )
+    assert (
+        infer_model(
+            "uv run python -m equidock_diff.train --hetero-edges --complete-frame --ligand-global-node"
+        )
+        == "EGNN + typed edges + complete frames + ligand context"
+    )
+    assert (
+        infer_model(
+            "uv run python -m equidock_diff.train --frame-hetero-backbone --hetero-edges --complete-frame --ligand-global-node"
+        )
+        == "heterogeneous frame-based backbone"
+    )
+
+
 def test_parse_experiment_log_extracts_metrics(tmp_path: Path) -> None:
     log_path = tmp_path / "10gs_hetgnn_log.md"
     log_path.write_text(
