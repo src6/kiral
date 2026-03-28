@@ -1,0 +1,9 @@
+complex_id,model,noise_schedule,seed,matched_runs,left_best_loss,right_best_loss,delta_best_loss,left_final_loss,right_final_loss,delta_final_loss,left_raw_ligand_rmse,right_raw_ligand_rmse,delta_raw_ligand_rmse,left_aligned_ligand_rmsd,right_aligned_ligand_rmsd,delta_aligned_ligand_rmsd,left_training_seconds,right_training_seconds,delta_training_seconds
+13gs,heterogeneous frame-based backbone,cosine,all,3,0.027754,0.016167,-0.011587,0.041120,0.095047,0.053926,1.184201,1.231594,0.047393,1.033504,1.142688,0.109185,2.998,5.948,2.950
+184l,heterogeneous frame-based backbone,cosine,all,3,0.007706,0.002152,-0.005554,0.008193,0.011808,0.003615,1.078402,1.437871,0.359469,0.801418,1.020598,0.219180,3.944,7.963,4.018
+186l,heterogeneous frame-based backbone,cosine,all,3,0.005757,0.001339,-0.004418,0.009766,0.013276,0.003510,0.968042,1.569498,0.601456,0.784783,0.982099,0.197315,4.048,8.526,4.478
+187l,heterogeneous frame-based backbone,cosine,all,3,0.003975,0.000750,-0.003225,0.084356,0.002911,-0.081445,1.454817,1.433943,-0.020875,0.863725,1.009925,0.146200,3.985,7.996,4.011
+188l,heterogeneous frame-based backbone,cosine,all,3,0.007616,0.001551,-0.006065,0.094695,0.002498,-0.092197,1.351718,1.097829,-0.253889,0.703451,0.850993,0.147543,3.845,7.936,4.090
+1a28,heterogeneous frame-based backbone,cosine,all,3,0.010673,0.004804,-0.005869,0.017099,0.030410,0.013311,1.113274,1.181134,0.067861,0.972127,1.052766,0.080638,3.585,7.195,3.610
+
+missing_side,complex_id,model,seed,noise_schedule
