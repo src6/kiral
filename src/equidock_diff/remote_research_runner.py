@@ -61,6 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", dest="seeds", action="append", type=int, default=None)
     parser.add_argument("--steps", dest="steps_values", action="append", type=int, default=None)
     parser.add_argument(
+        "--context-policy",
+        dest="context_policies",
+        action="append",
+        choices=("fixed", "adaptive"),
+        default=None,
+    )
+    parser.add_argument(
         "--crop-cutoff",
         dest="crop_cutoffs",
         action="append",
@@ -91,6 +98,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ligand-protein-clash-weight",
         dest="ligand_protein_clash_weights",
+        action="append",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--ligand-protein-contact-weight",
+        dest="ligand_protein_contact_weights",
         action="append",
         type=float,
         default=None,
@@ -301,7 +315,9 @@ def build_remote_dataset_setup_command(
         return None
     return (
         f"mkdir -p {shlex.quote(str(remote_repo / 'data'))} && "
-        f"ln -sfn {shlex.quote(str(remote_dataset_target))} {shlex.quote(str(link_path))} && "
+        f"(test ! -e {shlex.quote(str(link_path))} || test -L {shlex.quote(str(link_path))}) && "
+        f"rm -f {shlex.quote(str(link_path))} && "
+        f"ln -s {shlex.quote(str(remote_dataset_target))} {shlex.quote(str(link_path))} && "
         f"test -f {shlex.quote(str(link_path / 'index' / 'README'))}"
     )
 
@@ -350,6 +366,8 @@ def build_remote_runner_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--seed", str(seed)])
     for steps in _defaulted(args.steps_values):
         argv.extend(["--steps", str(steps)])
+    for context_policy in _defaulted(args.context_policies):
+        argv.extend(["--context-policy", str(context_policy)])
     for crop_cutoff in _defaulted(args.crop_cutoffs):
         argv.extend(["--crop-cutoff", str(crop_cutoff)])
     for sample_steps in _defaulted(args.sample_steps_values):
@@ -360,6 +378,8 @@ def build_remote_runner_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--ligand-shape-weight", str(value)])
     for value in _defaulted(args.ligand_protein_clash_weights):
         argv.extend(["--ligand-protein-clash-weight", str(value)])
+    for value in _defaulted(args.ligand_protein_contact_weights):
+        argv.extend(["--ligand-protein-contact-weight", str(value)])
     for value in _defaulted(args.sample_score_clips):
         argv.extend(["--sample-score-clip", str(value)])
     for value in _defaulted(args.sample_position_clips):

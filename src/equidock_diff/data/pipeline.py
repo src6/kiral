@@ -23,6 +23,7 @@ class GraphBatch:
     edge_index: torch.Tensor
     crop_mask: torch.Tensor | None = None
     ligand_bond_index: torch.Tensor | None = None
+    resolved_crop_cutoff: float | None = None
 
     @property
     def mask(self) -> torch.Tensor | None:
@@ -129,6 +130,7 @@ def move_graph_batch(batch: GraphBatch, device: torch.device) -> GraphBatch:
         ligand_bond_index=None
         if batch.ligand_bond_index is None
         else batch.ligand_bond_index.to(device),
+        resolved_crop_cutoff=batch.resolved_crop_cutoff,
     )
 
 
@@ -175,6 +177,7 @@ def _serialize_graph_batch(batch: GraphBatch) -> dict[str, object]:
         "edge_index": cpu_batch.edge_index,
         "crop_mask": cpu_batch.crop_mask,
         "ligand_bond_index": cpu_batch.ligand_bond_index,
+        "resolved_crop_cutoff": cpu_batch.resolved_crop_cutoff,
     }
 
 
@@ -190,6 +193,7 @@ def _deserialize_graph_batch(payload: dict[str, object]) -> GraphBatch:
         edge_index=payload["edge_index"],  # type: ignore[arg-type]
         crop_mask=payload.get("crop_mask", payload.get("mask")),  # type: ignore[arg-type]
         ligand_bond_index=payload.get("ligand_bond_index"),  # type: ignore[arg-type]
+        resolved_crop_cutoff=payload.get("resolved_crop_cutoff"),  # type: ignore[arg-type]
     )
 
 
@@ -232,6 +236,28 @@ def crop_protein_by_distance(
     dist = torch.norm(positions - center.unsqueeze(-2), dim=-1)
     return dist <= cutoff
 
+
+def ligand_max_span(ligand_positions: torch.Tensor) -> float:
+    if ligand_positions.dim() != 2 or ligand_positions.size(-1) != 3:
+        raise ValueError("ligand_positions must have shape [N, 3].")
+    if ligand_positions.size(0) < 2:
+        return 0.0
+    return float(torch.cdist(ligand_positions, ligand_positions).max().item())
+
+
+def resolve_context_crop_cutoff(
+    ligand_positions: torch.Tensor,
+    *,
+    context_policy: str,
+    cutoff: float,
+) -> float:
+    if context_policy == "fixed":
+        return float(cutoff)
+    if context_policy != "adaptive":
+        raise ValueError(f"Unsupported context policy: {context_policy}")
+    adaptive_crop = ligand_max_span(ligand_positions) * 0.9 + 2.0
+    return float(min(10.0, max(6.0, adaptive_crop)))
+
 def build_graph_batch(
     node_features: torch.Tensor,
     positions: torch.Tensor,
@@ -239,6 +265,7 @@ def build_graph_batch(
     mask: torch.Tensor | None = None,  # ligand mask
     ligand_bond_index: torch.Tensor | None = None,
     cutoff: float = 10.0,
+    resolved_crop_cutoff: float | None = None,
 ) -> GraphBatch:
     if mask is None:
         raise ValueError("build_graph_batch requires a ligand mask.")
@@ -289,6 +316,7 @@ def build_graph_batch(
         edge_index=new_edge_index,
         crop_mask=final_mask,  # Original-node crop mask retained for debugging/tests.
         ligand_bond_index=remapped_ligand_bond_index,
+        resolved_crop_cutoff=cutoff if resolved_crop_cutoff is None else resolved_crop_cutoff,
     )
 
 
@@ -298,10 +326,16 @@ def load_protein_ligand_graph(
     *,
     cutoff: float = 10.0,
     edge_cutoff: float = 4.5,
+    context_policy: str = "fixed",
 ) -> GraphBatch:
     ligand_path = Path(ligand_path)
     ligand_graph = _require_ligand_graph(featurize_ligand(ligand_path), ligand_path)
     protein_features, protein_positions = load_protein_graph(protein_path)
+    resolved_cutoff = resolve_context_crop_cutoff(
+        ligand_graph.pos,
+        context_policy=context_policy,
+        cutoff=cutoff,
+    )
 
     node_features = torch.cat([ligand_graph.x, protein_features], dim=0)
     positions = torch.cat([ligand_graph.pos, protein_positions], dim=0)
@@ -315,7 +349,8 @@ def load_protein_ligand_graph(
         edge_index=edge_index,
         mask=ligand_mask,
         ligand_bond_index=ligand_graph.edge_index,
-        cutoff=cutoff,
+        cutoff=resolved_cutoff,
+        resolved_crop_cutoff=resolved_cutoff,
     )
 
 
@@ -326,6 +361,7 @@ def load_protein_ligand_graph_cached(
     cutoff: float = 10.0,
     edge_cutoff: float = 4.5,
     cache_dir: Path | None = None,
+    context_policy: str = "fixed",
 ) -> GraphBatch:
     if cache_dir is None:
         return load_protein_ligand_graph(
@@ -333,13 +369,24 @@ def load_protein_ligand_graph_cached(
             ligand_path,
             cutoff=cutoff,
             edge_cutoff=edge_cutoff,
+            context_policy=context_policy,
+        )
+
+    effective_cutoff = cutoff
+    if context_policy == "adaptive":
+        ligand_path = Path(ligand_path)
+        ligand_graph = _require_ligand_graph(featurize_ligand(ligand_path), ligand_path)
+        effective_cutoff = resolve_context_crop_cutoff(
+            ligand_graph.pos,
+            context_policy=context_policy,
+            cutoff=cutoff,
         )
 
     cache_path = graph_cache_path(
         cache_dir,
         protein_path,
         ligand_path,
-        cutoff=cutoff,
+        cutoff=effective_cutoff,
         edge_cutoff=edge_cutoff,
     )
     if cache_path.exists():
@@ -350,6 +397,7 @@ def load_protein_ligand_graph_cached(
         ligand_path,
         cutoff=cutoff,
         edge_cutoff=edge_cutoff,
+        context_policy=context_policy,
     )
     write_graph_batch_cache(cache_path, batch)
     return batch

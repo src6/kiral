@@ -44,7 +44,8 @@ def test_build_remote_dataset_setup_command_links_repo_local_dataset() -> None:
     )
 
     assert command is not None
-    assert "ln -sfn" in command
+    assert "rm -f" in command
+    assert "ln -s " in command
     assert "data/pdbbind_v2020" in command
     assert "/Volumes/Data/pdbbind_v2020" in command
 
@@ -73,10 +74,14 @@ def test_build_remote_runner_command_includes_research_args() -> None:
             "cosine",
             "--seed",
             "42",
+            "--context-policy",
+            "adaptive",
             "--crop-cutoff",
             "8.0",
             "--ligand-protein-clash-weight",
             "0.02",
+            "--ligand-protein-contact-weight",
+            "0.05",
             "--sample-steps",
             "50",
             "--use-edge-attention",
@@ -104,8 +109,10 @@ def test_build_remote_runner_command_includes_research_args() -> None:
     assert "--complex-id 10gs" in command
     assert "--model frame_backbone" in command
     assert "--noise-schedule cosine" in command
+    assert "--context-policy adaptive" in command
     assert "--crop-cutoff 8.0" in command
     assert "--ligand-protein-clash-weight 0.02" in command
+    assert "--ligand-protein-contact-weight 0.05" in command
     assert "--use-edge-attention" in command
     assert "--max-parallel 2" in command
     assert "--stagger-seconds 1.5" in command
