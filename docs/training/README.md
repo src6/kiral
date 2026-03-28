@@ -52,6 +52,10 @@ Full exploratory histories, raw per-run logs, bulk loss traces, sample structure
   - targeted hard-case follow-up on the six regression complexes from the accepted confirmation; no candidate cleared the promotion gate
 - `docs/training/panel20/frame_backbone_cosine_regression_confirm/`
   - explicit note that a second full-panel confirmation was not run because the hard-case gate failed
+- `docs/training/panel20/frame_backbone_cosine_inference_diag/`
+  - inference-only hard-case follow-up using regenerated checkpoints from the accepted frame-backbone cosine recipe; no inference variant cleared the promotion gate
+- `docs/training/panel20/frame_backbone_cosine_inference_confirm/`
+  - explicit note that no inference-driven full-panel confirmation was run because the inference gate failed
 
 These are useful supporting artifacts, but they are not the headline evaluation story in the final report.
 
@@ -71,6 +75,8 @@ This recommendation is based on:
 The historical `docs/training/panel20/schedule/` table remains the dissertation-era canonical comparison. It is preserved as historical evidence and is not retroactively rewritten by this follow-on result.
 
 The later hard-case regression sweep in `docs/training/panel20/frame_backbone_cosine_regression_sweep/` also did not replace this recommendation, so the recipe above remains the current best validated setting in this repository.
+
+The subsequent hard-case inference diagnostics in `docs/training/panel20/frame_backbone_cosine_inference_diag/` likewise did not improve the recommendation: only `sample_steps` materially changed the hard-case behaviour, and no inference-only variant cleared the promotion gate.
 
 ## Curated Experimental Showcase
 
