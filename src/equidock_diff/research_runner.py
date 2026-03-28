@@ -39,6 +39,7 @@ class RunSpec:
     sample_steps: int
     sample_time_power: float
     ligand_shape_weight: float
+    ligand_protein_clash_weight: float
     sample_score_clip: float
     sample_position_clip: float
 
@@ -133,6 +134,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ligand-shape-weight",
         dest="ligand_shape_weights",
+        action="append",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--ligand-protein-clash-weight",
+        dest="ligand_protein_clash_weights",
         action="append",
         type=float,
         default=None,
@@ -247,6 +255,13 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
         float(value)
         for value in _defaulted(args.ligand_shape_weights, train_defaults.ligand_shape_weight)
     ]
+    ligand_protein_clash_weights = [
+        float(value)
+        for value in _defaulted(
+            args.ligand_protein_clash_weights,
+            train_defaults.ligand_protein_clash_weight,
+        )
+    ]
     sample_score_clips = [
         float(value)
         for value in _defaulted(args.sample_score_clips, train_defaults.sample_score_clip)
@@ -263,24 +278,26 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
                 for sample_steps in sorted(sample_steps_values):
                     for sample_time_power in sorted(sample_time_powers):
                         for ligand_shape_weight in sorted(ligand_shape_weights):
-                            for sample_score_clip in sorted(sample_score_clips):
-                                for sample_position_clip in sorted(sample_position_clips):
-                                    specs.append(
-                                        RunSpec(
-                                            complex_id=example.complex_id,
-                                            protein_path=example.protein_path,
-                                            ligand_path=example.ligand_path,
-                                            model=args.model,
-                                            noise_schedule=args.noise_schedule,
-                                            seed=seed,
-                                            steps=steps,
-                                            sample_steps=sample_steps,
-                                            sample_time_power=sample_time_power,
-                                            ligand_shape_weight=ligand_shape_weight,
-                                            sample_score_clip=sample_score_clip,
-                                            sample_position_clip=sample_position_clip,
+                            for ligand_protein_clash_weight in sorted(ligand_protein_clash_weights):
+                                for sample_score_clip in sorted(sample_score_clips):
+                                    for sample_position_clip in sorted(sample_position_clips):
+                                        specs.append(
+                                            RunSpec(
+                                                complex_id=example.complex_id,
+                                                protein_path=example.protein_path,
+                                                ligand_path=example.ligand_path,
+                                                model=args.model,
+                                                noise_schedule=args.noise_schedule,
+                                                seed=seed,
+                                                steps=steps,
+                                                sample_steps=sample_steps,
+                                                sample_time_power=sample_time_power,
+                                                ligand_shape_weight=ligand_shape_weight,
+                                                ligand_protein_clash_weight=ligand_protein_clash_weight,
+                                                sample_score_clip=sample_score_clip,
+                                                sample_position_clip=sample_position_clip,
+                                            )
                                         )
-                                    )
     return sorted(
         specs,
         key=lambda item: (
@@ -290,6 +307,7 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
             item.seed,
             item.steps,
             item.ligand_shape_weight,
+            item.ligand_protein_clash_weight,
             item.sample_steps,
             item.sample_time_power,
             item.sample_score_clip,
@@ -306,6 +324,7 @@ def training_signature(spec: RunSpec) -> tuple[object, ...]:
         spec.seed,
         spec.steps,
         spec.ligand_shape_weight,
+        spec.ligand_protein_clash_weight,
     )
 
 
@@ -316,6 +335,7 @@ def run_name_for_spec(spec: RunSpec) -> str:
         f"_sample{spec.sample_steps}"
         f"_time{_float_token(spec.sample_time_power)}"
         f"_shape{_float_token(spec.ligand_shape_weight)}"
+        f"_clash{_float_token(spec.ligand_protein_clash_weight)}"
         f"_score{_float_token(spec.sample_score_clip)}"
         f"_pos{_float_token(spec.sample_position_clip)}"
     )
@@ -325,6 +345,7 @@ def checkpoint_name_for_spec(spec: RunSpec) -> str:
     return (
         f"{spec.complex_id}_{spec.model}_{spec.noise_schedule}"
         f"_seed{spec.seed}_steps{spec.steps}_shape{_float_token(spec.ligand_shape_weight)}"
+        f"_clash{_float_token(spec.ligand_protein_clash_weight)}"
     )
 
 
@@ -422,6 +443,8 @@ def _train_argv(
         str(spec.sample_position_clip),
         "--ligand-shape-weight",
         str(spec.ligand_shape_weight),
+        "--ligand-protein-clash-weight",
+        str(spec.ligand_protein_clash_weight),
         "--noise-schedule",
         spec.noise_schedule,
         "--protein-path",
