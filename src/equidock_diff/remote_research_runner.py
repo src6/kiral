@@ -78,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument(
+        "--ligand-protein-clash-weight",
+        dest="ligand_protein_clash_weights",
+        action="append",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
         "--sample-score-clip",
         dest="sample_score_clips",
         action="append",
@@ -287,6 +294,8 @@ def build_remote_runner_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--sample-time-power", str(value)])
     for value in _defaulted(args.ligand_shape_weights):
         argv.extend(["--ligand-shape-weight", str(value)])
+    for value in _defaulted(args.ligand_protein_clash_weights):
+        argv.extend(["--ligand-protein-clash-weight", str(value)])
     for value in _defaulted(args.sample_score_clips):
         argv.extend(["--sample-score-clip", str(value)])
     for value in _defaulted(args.sample_position_clips):

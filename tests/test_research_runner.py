@@ -96,6 +96,35 @@ def test_expand_run_specs_resolves_complex_ids_and_builds_matrix(tmp_path: Path)
     assert specs[0].complex_id == "10gs"
     assert {item.seed for item in specs} == {42, 43}
     assert {item.sample_steps for item in specs} == {25, 50}
+    assert {item.ligand_protein_clash_weight for item in specs} == {0.0}
+
+
+def test_plan_runs_trains_again_when_clash_weight_changes(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "data"
+    _write_dataset_pair(dataset_root, "10gs")
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--complex-id",
+            "10gs",
+            "--dataset-root",
+            str(dataset_root),
+            "--model",
+            "frame_backbone",
+            "--noise-schedule",
+            "cosine",
+            "--ligand-protein-clash-weight",
+            "0.0",
+            "--ligand-protein-clash-weight",
+            "0.02",
+            "--tag",
+            "probe",
+        ]
+    )
+
+    planned = plan_runs(expand_run_specs(args), tmp_path / "runs" / "probe")
+
+    assert [item.action for item in planned] == ["train", "train"]
 
 
 def test_plan_runs_routes_inference_only_variants_to_resample(tmp_path: Path) -> None:

@@ -70,6 +70,8 @@ def test_build_remote_runner_command_includes_research_args() -> None:
             "cosine",
             "--seed",
             "42",
+            "--ligand-protein-clash-weight",
+            "0.02",
             "--sample-steps",
             "50",
             "--device-policy",
@@ -91,6 +93,7 @@ def test_build_remote_runner_command_includes_research_args() -> None:
     assert "--complex-id 10gs" in command
     assert "--model frame_backbone" in command
     assert "--noise-schedule cosine" in command
+    assert "--ligand-protein-clash-weight 0.02" in command
     assert "--output-root /Users/runner/work/kiral/kiral/runs/research" in command
 
 
