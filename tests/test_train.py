@@ -237,6 +237,52 @@ def test_training_step_is_finite_for_real_pair_graph(tmp_path: Path) -> None:
     assert beta_t > 0.0
 
 
+def test_load_graph_inputs_uses_cache_for_real_pair_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _RealArgs(_Args):
+        protein_path = Path("toy_protein.pdb")
+        ligand_path = Path("toy_ligand.sdf")
+        dataset_cache_dir = Path("graph_cache")
+
+    captured: dict[str, object] = {}
+
+    def _fake_cached_loader(
+        protein_path: Path,
+        ligand_path: Path,
+        *,
+        cutoff: float,
+        edge_cutoff: float,
+        cache_dir: Path | None,
+    ):
+        captured["protein_path"] = protein_path
+        captured["ligand_path"] = ligand_path
+        captured["cutoff"] = cutoff
+        captured["edge_cutoff"] = edge_cutoff
+        captured["cache_dir"] = cache_dir
+        return type(
+            "_Batch",
+            (),
+            {
+                "node_features": torch.zeros((2, 17), dtype=torch.float32),
+                "positions": torch.zeros((2, 3), dtype=torch.float32),
+                "edge_index": torch.zeros((2, 0), dtype=torch.long),
+                "ligand_bond_index": None,
+            },
+        )()
+
+    monkeypatch.setattr("equidock_diff.train.load_protein_ligand_graph_cached", _fake_cached_loader)
+
+    node_features, positions, edge_index, ligand_bond_index = load_graph_inputs(
+        _RealArgs(),
+        torch.device("cpu"),
+    )
+
+    assert node_features.shape == (2, 17)
+    assert positions.shape == (2, 3)
+    assert edge_index.shape == (2, 0)
+    assert ligand_bond_index is None
+    assert captured["cache_dir"] == Path("graph_cache")
+
+
 def test_training_step_is_finite_with_cosine_schedule() -> None:
     class _CosineArgs(_Args):
         noise_schedule = "cosine"
@@ -678,6 +724,31 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
     assert "- Final loss: `0.250000` at step `5`" in contents
     assert "- Aligned Ligand Rmsd: `1.234500`" in contents
     assert str(output_path) in contents
+
+
+def test_write_experiment_log_omits_optional_artifacts_when_absent(tmp_path: Path) -> None:
+    log_path = tmp_path / "experiment.md"
+
+    write_experiment_log(
+        log_path,
+        command="uv run python -m equidock_diff.train --steps 5",
+        device=torch.device("cpu"),
+        graph_source="real_pair",
+        args=_Args(),
+        loss_rows=[(1, 1.5, 0.2), (5, 0.25, 0.9)],
+        training_seconds=0.42,
+        node_count=147,
+        edge_count=2992,
+        sample_path=None,
+        trajectory_path=None,
+        loss_csv_path=None,
+        plot_path=None,
+    )
+
+    contents = log_path.read_text(encoding="utf-8")
+    assert "Sample artifact" not in contents
+    assert "Trajectory artifact" not in contents
+    assert "Loss CSV" not in contents
 
 
 def test_ligand_mask_from_features_uses_indicator_column() -> None:
