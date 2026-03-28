@@ -51,6 +51,21 @@ Full exploratory histories, raw per-run logs, bulk loss traces, sample structure
 
 These are useful supporting artifacts, but they are not the headline evaluation story in the final report.
 
+## Recommended Frame-Backbone Cosine Recipe
+
+For future frame-backbone cosine reruns, prefer:
+
+- `--device cpu --steps 200 --sample-steps 25 --noise-schedule cosine --frame-hetero-backbone --ligand-bond-weight 0.1`
+
+This recommendation is based on:
+
+- `docs/training/panel20/frame_backbone_cosine_tuning/subset_gate_decision.md`
+  - 5-complex CPU sweep that promoted `longer_training`
+- `docs/training/panel20/frame_backbone_cosine_confirm/confirmation_gate_decision.md`
+  - full 20-complex confirmation showing mean raw RMSE `-0.042488`, mean aligned RMSD `-0.064899`, and no Success@2A drop
+
+The historical `docs/training/panel20/schedule/` table remains the dissertation-era canonical comparison. It is preserved as historical evidence and is not retroactively rewritten by this follow-on result.
+
 ## Curated Experimental Showcase
 
 - Directory: `docs/training/showcase/`
