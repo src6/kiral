@@ -40,6 +40,7 @@ Use:
 
 - `equidock_diff.research_runner` for local scratch experiment matrices
 - `equidock_diff.remote_research_runner` for remote scratch runs on the Mac mini
+- `equidock_diff.dual_host_runner` for mixed local+remote scheduling under one tag
 - `equidock_diff.resample_from_checkpoint` when only inference-time parameters change
 
 Runner controls now available:
@@ -67,6 +68,7 @@ Scratch outputs belong in:
 
 - `runs/research/<tag>/`
 - `runs/remote/<tag>/`
+- `runs/dual/<tag>/`
 
 These are local-only and should not be committed.
 
@@ -76,6 +78,10 @@ Preferred scratch workflow:
 - do not read raw logs unless debugging a specific failed run
 - for the Mac mini, start with `--max-parallel 2`
 - keep remote scratch runs on `cpu` unless MPS is being explicitly re-benchmarked
+- for mixed scheduling, use `dual_host_runner` with:
+  - Mac mini `cpu`
+  - laptop `cpu`
+  - `--routing-policy explicit` when you want showcase probes on laptop and sweeps on the mini in the same tag
 
 ## Remote Mac Mini Workflow
 
@@ -177,6 +183,7 @@ Implemented relevant tooling and features include:
 - `sampler_diagnostics`
 - `research_runner`
 - `remote_research_runner`
+- `dual_host_runner`
 - `max_parallel`
 - `stagger_seconds`
 - `keep_going`
