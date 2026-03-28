@@ -69,3 +69,29 @@ uv run python -m equidock_diff.train --device cpu --steps 20 --sample-steps 10
 The quick-start training command above uses the synthetic path. Real-complex runs and dataset mode require the dataset setup above.
 
 Tracked evaluation summaries are kept under `docs/training/panel20/`, with representative qualitative figures in `docs/training/showcase/`.
+
+## Fast Research Iteration
+
+For small exploratory matrices, use the local research runner instead of hand-writing many `train` and `resample_from_checkpoint` commands:
+
+```bash
+uv run python -m equidock_diff.research_runner \
+  --complex-id 10gs \
+  --model frame_backbone \
+  --noise-schedule cosine \
+  --seed 42 \
+  --steps 200 \
+  --sample-steps 25 \
+  --sample-steps 50 \
+  --tag quick_cosine_probe
+```
+
+Research-run behavior:
+
+- scratch runs default to auto-detected `mps` when available and fall back to `cpu`
+- canonical/report-quality runs should still use CPU-oriented workflows outside the runner
+- local outputs go under `runs/research/<tag>/` and are not committed
+- inference-only variants reuse checkpoints through `equidock_diff.resample_from_checkpoint`
+- pose, trajectory, and plot artifacts are skipped by default; add `--save-artifacts` when you need them
+
+Use `--dry-run` to inspect the expanded run matrix before spending compute, and `--compare-against <prior-tag>` to generate a diff against an earlier local research tag.
