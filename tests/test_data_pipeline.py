@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from equidock_diff.data.pipeline import (
+    GraphBatch,
     build_complete_edge_index,
     build_graph_batch,
     build_radius_edge_index,
@@ -322,3 +323,55 @@ def test_load_protein_ligand_graph_cached_invalidates_when_input_changes(tmp_pat
 
     assert len(list(cache_dir.glob("*.pt"))) == 2
     assert not torch.allclose(original_batch.positions, updated_batch.positions)
+
+
+def test_load_protein_ligand_graph_cached_backfills_missing_resolved_cutoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdb_path, ligand_path = _write_test_pair(tmp_path)
+    cache_dir = tmp_path / "graph_cache"
+
+    adaptive_cutoff = resolve_context_crop_cutoff(
+        load_protein_ligand_graph(
+            pdb_path,
+            ligand_path,
+            cutoff=8.0,
+            edge_cutoff=4.5,
+            context_policy="adaptive",
+        ).positions[:3],
+        context_policy="adaptive",
+        cutoff=8.0,
+    )
+    cache_path = graph_cache_path(
+        cache_dir,
+        pdb_path,
+        ligand_path,
+        cutoff=adaptive_cutoff,
+        edge_cutoff=4.5,
+    )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(b"stub")
+
+    monkeypatch.setattr(
+        "equidock_diff.data.pipeline.load_graph_batch_cache",
+        lambda _path: GraphBatch(
+            node_features=torch.zeros((2, 17), dtype=torch.float32),
+            positions=torch.zeros((2, 3), dtype=torch.float32),
+            edge_index=torch.zeros((2, 0), dtype=torch.long),
+            crop_mask=torch.ones(2, dtype=torch.bool),
+            ligand_bond_index=torch.zeros((2, 0), dtype=torch.long),
+            resolved_crop_cutoff=None,
+        ),
+    )
+
+    graph = load_protein_ligand_graph_cached(
+        pdb_path,
+        ligand_path,
+        cutoff=8.0,
+        edge_cutoff=4.5,
+        cache_dir=cache_dir,
+        context_policy="adaptive",
+    )
+
+    assert graph.resolved_crop_cutoff == pytest.approx(adaptive_cutoff)

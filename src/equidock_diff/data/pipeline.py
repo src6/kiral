@@ -390,7 +390,17 @@ def load_protein_ligand_graph_cached(
         edge_cutoff=edge_cutoff,
     )
     if cache_path.exists():
-        return load_graph_batch_cache(cache_path)
+        cached_batch = load_graph_batch_cache(cache_path)
+        if cached_batch.resolved_crop_cutoff is None:
+            return GraphBatch(
+                node_features=cached_batch.node_features,
+                positions=cached_batch.positions,
+                edge_index=cached_batch.edge_index,
+                crop_mask=cached_batch.crop_mask,
+                ligand_bond_index=cached_batch.ligand_bond_index,
+                resolved_crop_cutoff=effective_cutoff,
+            )
+        return cached_batch
 
     batch = load_protein_ligand_graph(
         protein_path,
