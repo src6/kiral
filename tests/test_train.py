@@ -22,6 +22,7 @@ from equidock_diff.train import (
     ligand_shape_loss,
     load_checkpoint,
     load_graph_inputs,
+    main,
     make_model,
     noised_positions_for_schedule,
     saved_args_to_namespace,
@@ -41,6 +42,7 @@ class _Args:
     complete_frame = False
     frame_hetero_backbone = False
     use_edge_attention = False
+    use_cross_interface_block = False
     learning_rate = 1e-3
     ligand_bond_weight = 0.0
     ligand_shape_weight = 0.0
@@ -195,6 +197,38 @@ def test_training_step_is_finite_with_frame_hetero_backbone_and_edge_attention()
 
     assert torch.isfinite(loss)
     assert beta_t > 0.0
+
+
+def test_training_step_is_finite_with_frame_hetero_backbone_and_cross_interface_block() -> None:
+    class _FrameCrossArgs(_Args):
+        frame_hetero_backbone = True
+        use_cross_interface_block = True
+
+    device = torch.device("cpu")
+    model = make_model(_FrameCrossArgs(), device)
+    node_features, positions, edge_index = build_synthetic_graph(8, 1, device)
+
+    loss, beta_t = training_step(
+        model,
+        node_features,
+        positions,
+        edge_index,
+        beta_min=0.1,
+        beta_max=2.0,
+    )
+
+    assert torch.isfinite(loss)
+    assert beta_t > 0.0
+
+
+def test_main_rejects_cross_interface_block_without_frame_backbone() -> None:
+    with pytest.raises(ValueError, match="requires --frame-hetero-backbone"):
+        main(["--dry-run", "--use-cross-interface-block"])
+
+
+def test_main_rejects_cross_interface_block_with_edge_attention() -> None:
+    with pytest.raises(ValueError, match="cannot be combined with --use-edge-attention"):
+        main(["--dry-run", "--frame-hetero-backbone", "--use-cross-interface-block", "--use-edge-attention"])
 
 
 def test_load_graph_inputs_requires_both_real_paths() -> None:
@@ -843,6 +877,7 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
         edge_cutoff = 4.5
         context_policy = "gated"
         protein_node_budget = 256
+        use_cross_interface_block = True
 
     log_path = tmp_path / "experiment.md"
     output_path = tmp_path / "sample.pdb"
@@ -877,6 +912,7 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
     assert "- Edge count: `2992`" in contents
     assert "- Final loss: `0.250000` at step `5`" in contents
     assert "- Context policy: `gated`" in contents
+    assert "- Use cross interface block: `True`" in contents
     assert "- Protein node budget: `256`" in contents
     assert "- Retained protein nodes: `123`" in contents
     assert "- Resolved crop cutoff: `9.250000`" in contents

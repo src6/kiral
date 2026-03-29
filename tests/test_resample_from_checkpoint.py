@@ -28,6 +28,7 @@ class _Args:
     hetero_edges = False
     frame_hetero_backbone = False
     use_edge_attention = False
+    use_cross_interface_block = False
     learning_rate = 1e-3
     ligand_bond_weight = 0.0
     ligand_shape_weight = 0.0

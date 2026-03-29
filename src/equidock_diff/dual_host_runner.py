@@ -37,6 +37,7 @@ class ScheduledUnit:
     steps: int
     protein_node_budget: int
     crop_cutoff: float
+    use_cross_interface_block: bool
     planned_runs: tuple[PlannedRun, ...]
     local_output_root: Path
     remote_output_root: Path
@@ -52,6 +53,7 @@ class UnitStatusRow:
     steps: int
     protein_node_budget: int
     crop_cutoff: float
+    use_cross_interface_block: bool
     planned_actions: str
     status: str
     completed_runs: int
@@ -204,6 +206,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable lightweight incoming-edge attention inside frame-backbone runs",
     )
+    parser.add_argument(
+        "--use-cross-interface-block",
+        action="store_true",
+        help="Enable the frame-backbone protein-to-ligand cross-message block",
+    )
     parser.add_argument("--dual-tag", required=True, help="Top-level dual-host tag under runs/dual/")
     parser.add_argument(
         "--local-max-parallel",
@@ -336,6 +343,10 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--remote-max-parallel must be at least 1.")
     if args.use_edge_attention and args.model != "frame_backbone":
         raise ValueError("--use-edge-attention currently requires --model frame_backbone.")
+    if args.use_cross_interface_block and args.model != "frame_backbone":
+        raise ValueError("--use-cross-interface-block currently requires --model frame_backbone.")
+    if args.use_cross_interface_block and args.use_edge_attention:
+        raise ValueError("--use-cross-interface-block cannot be combined with --use-edge-attention in this cycle.")
     if args.routing_policy == "explicit":
         local_ids = set(args.local_complex_ids or [])
         remote_ids = set(args.remote_complex_ids or [])
@@ -397,6 +408,7 @@ def plan_scheduled_units(args: argparse.Namespace) -> list[ScheduledUnit]:
                 steps=group[0].spec.steps,
                 protein_node_budget=group[0].spec.protein_node_budget,
                 crop_cutoff=group[0].spec.crop_cutoff,
+                use_cross_interface_block=group[0].spec.use_cross_interface_block,
                 planned_runs=group,
                 local_output_root=DEFAULT_LOCAL_RESEARCH_ROOT / subtag,
                 remote_output_root=DEFAULT_REMOTE_SUMMARY_ROOT / subtag,
@@ -447,6 +459,8 @@ def _group_runner_args(unit: ScheduledUnit, *, compare_against: str | None, save
     )
     if specs[0].use_edge_attention:
         argv.append("--use-edge-attention")
+    if specs[0].use_cross_interface_block:
+        argv.append("--use-cross-interface-block")
     return argv
 
 
@@ -529,6 +543,7 @@ def _initial_unit_status(unit: ScheduledUnit, status: str) -> UnitStatusRow:
         steps=unit.steps,
         protein_node_budget=unit.protein_node_budget,
         crop_cutoff=unit.crop_cutoff,
+        use_cross_interface_block=unit.use_cross_interface_block,
         planned_actions=_planned_actions_summary(unit.planned_runs),
         status=status,
         completed_runs=0,
@@ -551,6 +566,7 @@ def _completed_unit_status(unit: ScheduledUnit, metrics: UnitMetrics) -> UnitSta
         steps=unit.steps,
         protein_node_budget=unit.protein_node_budget,
         crop_cutoff=unit.crop_cutoff,
+        use_cross_interface_block=unit.use_cross_interface_block,
         planned_actions=_planned_actions_summary(unit.planned_runs),
         status="completed" if metrics.failed_runs == 0 else "failed",
         completed_runs=metrics.completed_runs,
@@ -595,6 +611,7 @@ def write_plan_csv(path: Path, units: list[ScheduledUnit]) -> None:
                 "steps",
                 "protein_node_budget",
                 "crop_cutoff",
+                "use_cross_interface_block",
                 "planned_actions",
                 "local_output_root",
                 "remote_output_root",
@@ -611,6 +628,7 @@ def write_plan_csv(path: Path, units: list[ScheduledUnit]) -> None:
                     unit.steps,
                     unit.protein_node_budget,
                     f"{unit.crop_cutoff:.6f}",
+                    str(unit.use_cross_interface_block).lower(),
                     _planned_actions_summary(unit.planned_runs),
                     unit.local_output_root.as_posix(),
                     unit.remote_output_root.as_posix(),
@@ -632,6 +650,7 @@ def write_status_csv(path: Path, rows: list[UnitStatusRow]) -> None:
                 "steps",
                 "protein_node_budget",
                 "crop_cutoff",
+                "use_cross_interface_block",
                 "planned_actions",
                 "status",
                 "completed_runs",
@@ -655,6 +674,7 @@ def write_status_csv(path: Path, rows: list[UnitStatusRow]) -> None:
                     row.steps,
                     row.protein_node_budget,
                     f"{row.crop_cutoff:.6f}",
+                    str(row.use_cross_interface_block).lower(),
                     row.planned_actions,
                     row.status,
                     row.completed_runs,

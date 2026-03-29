@@ -102,6 +102,7 @@ def test_expand_run_specs_resolves_complex_ids_and_builds_matrix(tmp_path: Path)
     assert {item.protein_node_budget for item in specs} == {256}
     assert {item.crop_cutoff for item in specs} == {10.0}
     assert {item.use_edge_attention for item in specs} == {False}
+    assert {item.use_cross_interface_block for item in specs} == {False}
 
 
 def test_plan_runs_trains_again_when_clash_weight_changes(tmp_path: Path) -> None:
@@ -216,6 +217,55 @@ def test_plan_runs_trains_again_when_protein_node_budget_changes(tmp_path: Path)
     planned = plan_runs(expand_run_specs(args), tmp_path / "runs" / "probe")
 
     assert [item.action for item in planned] == ["train", "train"]
+
+
+def test_plan_runs_trains_again_when_cross_interface_flag_changes(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "data"
+    _write_dataset_pair(dataset_root, "10gs")
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--complex-id",
+            "10gs",
+            "--dataset-root",
+            str(dataset_root),
+            "--model",
+            "frame_backbone",
+            "--noise-schedule",
+            "cosine",
+            "--tag",
+            "probe",
+            "--context-policy",
+            "adaptive",
+            "--use-cross-interface-block",
+        ]
+    )
+
+    with_cross = plan_runs(expand_run_specs(args), tmp_path / "runs" / "probe_with")
+    without_cross = plan_runs(
+        expand_run_specs(
+            parser.parse_args(
+                [
+                    "--complex-id",
+                    "10gs",
+                    "--dataset-root",
+                    str(dataset_root),
+                    "--model",
+                    "frame_backbone",
+                    "--noise-schedule",
+                    "cosine",
+                    "--tag",
+                    "probe",
+                    "--context-policy",
+                    "adaptive",
+                ]
+            )
+        ),
+        tmp_path / "runs" / "probe_without",
+    )
+
+    assert with_cross[0].checkpoint_name != without_cross[0].checkpoint_name
+    assert with_cross[0].run_name != without_cross[0].run_name
 
 
 def test_plan_runs_routes_inference_only_variants_to_resample(tmp_path: Path) -> None:

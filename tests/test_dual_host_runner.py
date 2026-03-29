@@ -180,6 +180,7 @@ def test_build_runner_argvs_include_crop_cutoff_and_cpu_policy(tmp_path: Path) -
             "25",
             "--sample-steps",
             "50",
+            "--use-cross-interface-block",
             "--dual-tag",
             "probe",
             "--remote-host",
@@ -202,6 +203,8 @@ def test_build_runner_argvs_include_crop_cutoff_and_cpu_policy(tmp_path: Path) -
     assert "--crop-cutoff" in remote_argv
     assert "--ligand-protein-contact-weight" in local_argv
     assert "--ligand-protein-contact-weight" in remote_argv
+    assert "--use-cross-interface-block" in local_argv
+    assert "--use-cross-interface-block" in remote_argv
     assert "equidock_diff.research_runner" in " ".join(local_argv)
     assert "equidock_diff.remote_research_runner" in " ".join(remote_argv)
 

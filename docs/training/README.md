@@ -68,6 +68,8 @@ Full exploratory histories, raw per-run logs, bulk loss traces, sample structure
   - explicit note that no extra-seed evidence pass was run because no later-stage candidate displaced the accepted recommendation
 - `docs/training/panel20/frame_backbone_cosine_clash_tuning/`
   - hard-case ligand-protein clash-prior sweep on the six regression complexes; no clash-weight candidate cleared the promotion gate
+- `docs/training/panel20/frame_backbone_cosine_cross_interface_tuning/`
+  - hard-case frame-backbone cross-interface architecture sweep against the adaptive-context control; the v1 ligand-only cross-message block regressed the aggregate hard-case metrics and did not justify a full-panel confirmation
 
 These are useful supporting artifacts, but they are not the headline evaluation story in the final report.
 
@@ -97,6 +99,8 @@ The sampler-redesign follow-up in `docs/training/panel20/frame_backbone_cosine_s
 The geometry-aware follow-up in `docs/training/panel20/frame_backbone_cosine_geometry_tuning/` also failed to replace the recommendation: `--ligand-shape-weight 0.02` was the strongest candidate, but its hard-case aligned-RMSD gain was only `-0.003337 A`, far below the promotion threshold.
 
 The later clash-prior follow-up in `docs/training/panel20/frame_backbone_cosine_clash_tuning/` likewise did not replace the recommendation: `--ligand-protein-clash-weight 0.05` produced only a marginal hard-case aligned-RMSD improvement (`0.958256 -> 0.956771`) and did not justify a full-panel confirmation.
+
+The later cross-interface architecture follow-up in `docs/training/panel20/frame_backbone_cosine_cross_interface_tuning/` also failed to replace the recommendation: the v1 ligand-only protein-to-ligand cross-message block regressed the adaptive-context hard-case control on both aligned RMSD and raw RMSE and did not justify a full-panel confirmation.
 
 No later-stage candidate displaced the accepted recipe, so the extra-seed evidence stage in `docs/training/panel20/frame_backbone_cosine_evidence/` was not run.
 
