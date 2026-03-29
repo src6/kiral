@@ -22,6 +22,7 @@ class EGNNConfig:
     use_complete_frame: bool = False
     use_frame_hetero_backbone: bool = False
     use_edge_attention: bool = False
+    use_cross_interface_block: bool = False
 
 
 def incoming_edge_softmax(
@@ -311,6 +312,65 @@ class EGNNLayer(nn.Module):
         updated_positions = positions + coord_updates
         return updated_states, updated_positions
 
+
+class CrossInterfaceBlock(nn.Module):
+    """Protein-to-ligand hidden-state update using frame-based cross-edge messages."""
+
+    def __init__(self, config: EGNNConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.edge_mlps = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(2 * config.hidden_dim + 4, config.hidden_dim),
+                    nn.SiLU(),
+                    nn.Linear(config.hidden_dim, config.hidden_dim),
+                    nn.SiLU(),
+                )
+                for _ in range(NUM_EDGE_TYPES)
+            ]
+        )
+        self.node_mlp = nn.Sequential(
+            nn.Linear(2 * config.hidden_dim, config.hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+        )
+
+    def forward(
+        self,
+        node_states: torch.Tensor,
+        positions: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_types: torch.Tensor,
+        ligand_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        src, dst = edge_index
+        cross_mask = (~ligand_mask[src]) & ligand_mask[dst]
+        if not bool(cross_mask.any()):
+            return node_states
+
+        messages = torch.zeros_like(node_states)
+        scalar_features = scalarize_local_frame(positions[src], positions[dst])
+        for edge_type in range(NUM_EDGE_TYPES):
+            edge_mask = cross_mask & (edge_types == edge_type)
+            if not bool(edge_mask.any()):
+                continue
+            edge_inputs = torch.cat(
+                [node_states[src[edge_mask]], node_states[dst[edge_mask]], scalar_features[edge_mask]],
+                dim=-1,
+            )
+            edge_messages = self.edge_mlps[edge_type](edge_inputs)
+            messages.index_add_(0, dst[edge_mask], edge_messages)
+
+        if not bool(ligand_mask.any()):
+            return node_states
+        updated_states = node_states.clone()
+        updated_states[ligand_mask] = updated_states[ligand_mask] + self.node_mlp(
+            torch.cat([node_states[ligand_mask], messages[ligand_mask]], dim=-1)
+        )
+        return updated_states
+
+
 class EGNNScoreNet(nn.Module):
     """Interface for an EGNN-based score network.
 
@@ -325,6 +385,11 @@ class EGNNScoreNet(nn.Module):
             nn.Linear(1, config.time_dim),
             nn.SiLU(),
             nn.Linear(config.time_dim, config.hidden_dim),
+        )
+        self.cross_interface_blocks = (
+            nn.ModuleList(CrossInterfaceBlock(config) for _ in range(max(config.num_layers, 1)))
+            if config.use_cross_interface_block
+            else None
         )
         self.layers = nn.ModuleList(
             EGNNLayer(config) for _ in range(max(config.num_layers, 1))
@@ -385,7 +450,17 @@ class EGNNScoreNet(nn.Module):
                 dtype=edge_index.dtype,
             )
         hidden_positions = centered_positions
-        for layer in self.layers:
+        for layer_index, layer in enumerate(self.layers):
+            if self.cross_interface_blocks is not None:
+                if ligand_mask is None:
+                    raise ValueError("ligand_mask is required when the cross-interface block is enabled.")
+                node_states = self.cross_interface_blocks[layer_index](
+                    node_states,
+                    hidden_positions,
+                    edge_index,
+                    edge_types,
+                    ligand_mask,
+                )
             node_states, hidden_positions = layer(
                 node_states,
                 hidden_positions,

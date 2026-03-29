@@ -195,13 +195,15 @@ Implemented relevant tooling and features include:
 - `context_policy`
 - `protein_node_budget`
 - `ligand_protein_contact_weight`
+- `use_cross_interface_block`
 
 Recent research conclusion:
 
 - accepted frame-backbone cosine improvement is statistically significant, but narrowly
-- later sampler, geometry, clash, contact, and gated-context follow-ups did not beat the accepted recipe
+- later sampler, geometry, clash, contact, gated-context, and cross-interface follow-ups did not beat the accepted recipe
 - adaptive context is the strongest recent non-promoted hard-case control
 - deterministic protein-node gating (`K=192`) is the strongest new gated result, but it still failed the hard-case promotion gate
+- the v1 ligand-only cross-interface block regressed the adaptive-context hard-case control and should not be rerun unchanged
 - generic edge attention remains deprioritized after underperforming the crop-10 control
 - there is no currently promoted successor to the accepted frame-backbone cosine recipe
 
@@ -220,6 +222,7 @@ Prefer these assumptions unless contradicted by the task:
 - Muon is out of scope
 - standalone clash/contact sweeps are currently low priority
 - deterministic node gating has already been evaluated; do not restart that sweep unless the architecture or gating signal changes materially
+- the current cross-interface v1 block has already been evaluated and failed badly enough that future interface work should change the mechanism materially, not just rerun the same flag
 
 Avoid unnecessary context expansion:
 

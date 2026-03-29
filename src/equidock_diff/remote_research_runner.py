@@ -122,6 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable lightweight incoming-edge attention inside frame-backbone runs",
     )
     parser.add_argument(
+        "--use-cross-interface-block",
+        action="store_true",
+        help="Enable the frame-backbone protein-to-ligand cross-message block",
+    )
+    parser.add_argument(
         "--sample-score-clip",
         dest="sample_score_clips",
         action="append",
@@ -395,6 +400,8 @@ def build_remote_runner_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--sample-position-clip", str(value)])
     if args.use_edge_attention:
         argv.append("--use-edge-attention")
+    if args.use_cross_interface_block:
+        argv.append("--use-cross-interface-block")
     argv.extend(["--output-root", str(remote_research_root(args))])
     return argv
 
@@ -597,6 +604,12 @@ def fetch_remote_results(args: argparse.Namespace) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.use_edge_attention and args.model != "frame_backbone":
+        raise ValueError("--use-edge-attention currently requires --model frame_backbone.")
+    if args.use_cross_interface_block and args.model != "frame_backbone":
+        raise ValueError("--use-cross-interface-block currently requires --model frame_backbone.")
+    if args.use_cross_interface_block and args.use_edge_attention:
+        raise ValueError("--use-cross-interface-block cannot be combined with --use-edge-attention in this cycle.")
     repo_root = Path.cwd()
     git_state = local_git_sync_state(repo_root)
     sync_mode = resolve_sync_mode(args.sync_mode, git_state)

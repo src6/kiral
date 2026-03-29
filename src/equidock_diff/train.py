@@ -83,6 +83,7 @@ RESUME_COMPAT_KEYS = (
     "complete_frame",
     "frame_hetero_backbone",
     "use_edge_attention",
+    "use_cross_interface_block",
     "learning_rate",
     "ligand_bond_weight",
     "ligand_shape_weight",
@@ -177,6 +178,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--use-edge-attention",
         action="store_true",
         help="Enable lightweight incoming-edge attention inside the frame-backbone EGNN layers",
+    )
+    parser.add_argument(
+        "--use-cross-interface-block",
+        action="store_true",
+        help="Enable a ligand-only protein-to-ligand cross-message block inside the frame-backbone EGNN layers",
     )
     parser.add_argument(
         "--hetgnn-backbone",
@@ -418,6 +424,7 @@ def make_model_for_node_dim(
                 use_complete_frame=args.complete_frame,
                 use_frame_hetero_backbone=args.frame_hetero_backbone,
                 use_edge_attention=args.use_edge_attention,
+                use_cross_interface_block=args.use_cross_interface_block,
             )
         )
     )
@@ -1213,6 +1220,10 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--protein-node-budget must be positive.")
     if args.use_edge_attention and not args.frame_hetero_backbone:
         raise ValueError("--use-edge-attention currently requires --frame-hetero-backbone.")
+    if args.use_cross_interface_block and not args.frame_hetero_backbone:
+        raise ValueError("--use-cross-interface-block currently requires --frame-hetero-backbone.")
+    if args.use_cross_interface_block and args.use_edge_attention:
+        raise ValueError("--use-cross-interface-block cannot be combined with --use-edge-attention in this cycle.")
     if dataset_mode_enabled(args) and (args.protein_path is not None or args.ligand_path is not None):
         raise ValueError("Dataset mode cannot be combined with --protein-path/--ligand-path.")
     if dataset_mode_enabled(args) and args.batch_size != 1:

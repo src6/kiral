@@ -86,7 +86,6 @@ def test_build_remote_runner_command_includes_research_args() -> None:
             "0.05",
             "--sample-steps",
             "50",
-            "--use-edge-attention",
             "--max-parallel",
             "2",
             "--stagger-seconds",
@@ -94,6 +93,7 @@ def test_build_remote_runner_command_includes_research_args() -> None:
             "--keep-going",
             "--device-policy",
             "scratch",
+            "--use-cross-interface-block",
             "--tag",
             "remote_probe",
             "--remote-host",
@@ -116,7 +116,7 @@ def test_build_remote_runner_command_includes_research_args() -> None:
     assert "--crop-cutoff 8.0" in command
     assert "--ligand-protein-clash-weight 0.02" in command
     assert "--ligand-protein-contact-weight 0.05" in command
-    assert "--use-edge-attention" in command
+    assert "--use-cross-interface-block" in command
     assert "--max-parallel 2" in command
     assert "--stagger-seconds 1.5" in command
     assert "--keep-going" in command

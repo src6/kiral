@@ -111,6 +111,7 @@ def write_experiment_log(
         f"- Crop cutoff: `{args.crop_cutoff}`",
         f"- Context policy: `{getattr(args, 'context_policy', 'fixed')}`",
         f"- Edge cutoff: `{args.edge_cutoff}`",
+        f"- Use cross interface block: `{bool(getattr(args, 'use_cross_interface_block', False))}`",
         f"- Final loss: `{final_loss:.6f}` at step `{final_step}`",
         f"- Best loss: `{best_loss:.6f}`",
         f"- Final beta_t: `{final_beta:.4f}`",

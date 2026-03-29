@@ -50,6 +50,7 @@ class RunSpec:
     sample_score_clip: float
     sample_position_clip: float
     use_edge_attention: bool
+    use_cross_interface_block: bool
 
 
 @dataclass(frozen=True)
@@ -204,6 +205,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--use-edge-attention",
         action="store_true",
         help="Enable lightweight edge attention inside the frame-backbone EGNN layers",
+    )
+    parser.add_argument(
+        "--use-cross-interface-block",
+        action="store_true",
+        help="Enable the frame-backbone protein-to-ligand cross-message block",
     )
     parser.add_argument(
         "--sample-score-clip",
@@ -405,6 +411,9 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
                                                                     sample_score_clip=sample_score_clip,
                                                                     sample_position_clip=sample_position_clip,
                                                                     use_edge_attention=bool(args.use_edge_attention),
+                                                                    use_cross_interface_block=bool(
+                                                                        args.use_cross_interface_block
+                                                                    ),
                                                                 )
                                                             )
     return sorted(
@@ -426,6 +435,7 @@ def expand_run_specs(args: argparse.Namespace) -> list[RunSpec]:
             item.sample_score_clip,
             item.sample_position_clip,
             item.use_edge_attention,
+            item.use_cross_interface_block,
         ),
     )
 
@@ -444,6 +454,7 @@ def training_signature(spec: RunSpec) -> tuple[object, ...]:
         spec.ligand_protein_clash_weight,
         spec.ligand_protein_contact_weight,
         spec.use_edge_attention,
+        spec.use_cross_interface_block,
     )
 
 
@@ -460,6 +471,7 @@ def run_name_for_spec(spec: RunSpec) -> str:
         f"_clash{_float_token(spec.ligand_protein_clash_weight)}"
         f"_contact{_float_token(spec.ligand_protein_contact_weight)}"
         f"_attn{1 if spec.use_edge_attention else 0}"
+        f"_xmsg{1 if spec.use_cross_interface_block else 0}"
         f"_score{_float_token(spec.sample_score_clip)}"
         f"_pos{_float_token(spec.sample_position_clip)}"
     )
@@ -473,6 +485,7 @@ def checkpoint_name_for_spec(spec: RunSpec) -> str:
         f"_clash{_float_token(spec.ligand_protein_clash_weight)}"
         f"_contact{_float_token(spec.ligand_protein_contact_weight)}"
         f"_attn{1 if spec.use_edge_attention else 0}"
+        f"_xmsg{1 if spec.use_cross_interface_block else 0}"
     )
 
 
@@ -604,6 +617,8 @@ def _train_argv(
     argv.extend(_model_training_args(spec.model))
     if spec.use_edge_attention:
         argv.append("--use-edge-attention")
+    if spec.use_cross_interface_block:
+        argv.append("--use-cross-interface-block")
     if not save_artifacts:
         argv.extend(["--skip-pose-artifacts", "--skip-plot"])
     return argv
@@ -1055,6 +1070,10 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--stagger-seconds must be non-negative.")
     if args.use_edge_attention and args.model != "frame_backbone":
         raise ValueError("--use-edge-attention currently requires --model frame_backbone.")
+    if args.use_cross_interface_block and args.model != "frame_backbone":
+        raise ValueError("--use-cross-interface-block currently requires --model frame_backbone.")
+    if args.use_cross_interface_block and args.use_edge_attention:
+        raise ValueError("--use-cross-interface-block cannot be combined with --use-edge-attention in this cycle.")
     requested_device, actual_device = resolve_runner_device(args.device_policy, args.device)
     root = args.output_root / args.tag
     specs = expand_run_specs(args)
