@@ -1515,26 +1515,27 @@ def main(argv: list[str] | None = None) -> int:
                 step_metrics=[],
             )
         sampler_snr = bool(args.snr_consistent or args.snr_mode in ("sampler", "full"))
-        sampled_positions, trajectory, sampler_diagnostics = sample_positions(
-            model,
-            node_features,
-            edge_index,
-            positions.size(0),
-            device,
-            args.sample_steps,
-            args.beta_min,
-            args.beta_max,
-            args.sample_score_clip,
-            args.sample_position_clip,
-            sample_time_power=args.sample_time_power,
-            noise_schedule=args.noise_schedule,
-            cosine_offset=args.cosine_offset,
-            cosine_nu=args.cosine_nu,
-            reference_positions=positions,
-            anchor_protein=args.frame_hetero_backbone,
-            sampler_diagnostics=sampler_context,
-            snr_consistent=sampler_snr,
-        )
+        with get_autocast_context(device, enabled=args.amp):
+            sampled_positions, trajectory, sampler_diagnostics = sample_positions(
+                model,
+                node_features,
+                edge_index,
+                positions.size(0),
+                device,
+                args.sample_steps,
+                args.beta_min,
+                args.beta_max,
+                args.sample_score_clip,
+                args.sample_position_clip,
+                sample_time_power=args.sample_time_power,
+                noise_schedule=args.noise_schedule,
+                cosine_offset=args.cosine_offset,
+                cosine_nu=args.cosine_nu,
+                reference_positions=positions,
+                anchor_protein=args.frame_hetero_backbone,
+                sampler_diagnostics=sampler_context,
+                snr_consistent=sampler_snr,
+            )
     sample_path: Path | None = None
     trajectory_path: Path | None = None
     ligand_sample_path: Path | None = None
