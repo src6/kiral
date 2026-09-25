@@ -27,6 +27,7 @@ from equidock_diff.diffusion.schedules import (
 from equidock_diff.diffusion.sde import SDEStep, forward_step, reverse_step
 from equidock_diff.models.egnn import EGNNConfig, infer_ligand_mask
 from equidock_diff.models.score_net import ScoreNet, ScoreNetConfig
+from equidock_diff.models.amp_utils import get_autocast_context, maybe_compile_model
 from equidock_diff.utils.artifacts import (
     write_experiment_log,
     write_ligand_artifacts,
@@ -96,6 +97,8 @@ RESUME_COMPAT_KEYS = (
     "noise_schedule",
     "snr_consistent",
     "snr_mode",
+    "amp",
+    "compile",
     "cosine_offset",
     "cosine_nu",
     "protein_path",
@@ -239,6 +242,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="off",
         help="Apply the SNR-consistent correction to training noising only (train), "
         "the ancestral sampler only (sampler), or both (full)",
+    )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable automatic mixed precision (BF16 on CUDA / CPU)",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Enable PyTorch 2.x model compilation (torch.compile)",
     )
     parser.add_argument(
         "--cosine-offset",
@@ -1347,6 +1360,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     model = make_model_for_node_dim(args, device, node_dim=node_features.size(-1))
+    if args.compile:
+        model = maybe_compile_model(model, enabled=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     checkpoint_output = resolve_checkpoint_output(args)
     resumed_state: CheckpointState | None = None
@@ -1390,24 +1405,25 @@ def main(argv: list[str] | None = None) -> int:
 
         optimizer.zero_grad(set_to_none=True)
         train_snr = bool(args.snr_consistent or args.snr_mode in ("train", "full"))
-        loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss, contact_loss = training_step_with_breakdown(
-            model,
-            node_features,
-            positions,
-            edge_index,
-            ligand_bond_index,
-            args.beta_min,
-            args.beta_max,
-            ligand_bond_weight=args.ligand_bond_weight,
-            ligand_shape_weight=args.ligand_shape_weight,
-            ligand_protein_clash_weight=args.ligand_protein_clash_weight,
-            ligand_protein_contact_weight=args.ligand_protein_contact_weight,
-            frame_hetero_backbone=args.frame_hetero_backbone,
-            noise_schedule=args.noise_schedule,
-            cosine_offset=args.cosine_offset,
-            cosine_nu=args.cosine_nu,
-            snr_consistent=train_snr,
-        )
+        with get_autocast_context(device, enabled=args.amp):
+            loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss, contact_loss = training_step_with_breakdown(
+                model,
+                node_features,
+                positions,
+                edge_index,
+                ligand_bond_index,
+                args.beta_min,
+                args.beta_max,
+                ligand_bond_weight=args.ligand_bond_weight,
+                ligand_shape_weight=args.ligand_shape_weight,
+                ligand_protein_clash_weight=args.ligand_protein_clash_weight,
+                ligand_protein_contact_weight=args.ligand_protein_contact_weight,
+                frame_hetero_backbone=args.frame_hetero_backbone,
+                noise_schedule=args.noise_schedule,
+                cosine_offset=args.cosine_offset,
+                cosine_nu=args.cosine_nu,
+                snr_consistent=train_snr,
+            )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
