@@ -12,6 +12,7 @@ from equidock_diff.utils.artifacts import (
     write_ligand_artifacts,
 )
 from equidock_diff.train import (
+    build_parser,
     build_sample_schedule,
     build_dataset_examples,
     build_synthetic_graph,
@@ -999,3 +1000,85 @@ def test_write_ligand_artifacts_filters_to_ligand_nodes(tmp_path: Path) -> None:
     assert len([line for line in sample_lines if line.startswith("ATOM")]) == 2
     assert len([line for line in trajectory_lines if line.startswith("MODEL")]) == 2
     assert "   9.000" not in ligand_output.read_text(encoding="utf-8")
+
+
+def test_parser_snr_consistent_flags() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--snr-consistent", "--snr-mode", "full"])
+    assert args.snr_consistent is True
+    assert args.snr_mode == "full"
+
+
+def test_noised_positions_snr_consistent_variance() -> None:
+    torch.manual_seed(42)
+    clean_positions = torch.zeros(50000, 3, dtype=torch.float32)
+    t = torch.tensor([0.5], dtype=torch.float32)
+    beta_min = 0.1
+    beta_max = 2.0
+
+    noised, beta_t = noised_positions_for_schedule(
+        clean_positions,
+        t,
+        beta_min=beta_min,
+        beta_max=beta_max,
+        noise_schedule="linear",
+        cosine_offset=0.008,
+        cosine_nu=1.5,
+        snr_consistent=True,
+    )
+
+    # Under clean_positions = 0, noised variance should equal 1 - alpha_bar(t)
+    alpha_bar = torch.exp(-(beta_min * t + 0.5 * (beta_max - beta_min) * t**2)).item()
+    expected_std = (1.0 - alpha_bar) ** 0.5
+    observed_std = noised.std().item()
+    assert observed_std == pytest.approx(expected_std, rel=0.02)
+
+
+def test_sample_positions_snr_consistent_ancestral_sampler() -> None:
+    torch.manual_seed(42)
+    num_nodes = 8
+    node_features = torch.tensor(
+        [
+            [6.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],  # protein
+            [6.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],  # protein
+            [6.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],  # protein
+            [6.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],  # protein
+            [6.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ligand
+            [7.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ligand
+            [8.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ligand
+            [6.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ligand
+        ],
+        dtype=torch.float32,
+    )
+    reference_positions = torch.randn(num_nodes, 3, dtype=torch.float32)
+    edge_index = torch.empty((2, 0), dtype=torch.long)
+
+    class DummyScoreNet(torch.nn.Module):
+        def forward(self, h, pos, edge_idx, t):
+            # Dummy displacement prediction: pull toward reference
+            return reference_positions - pos
+
+    model = DummyScoreNet()
+    device = torch.device("cpu")
+
+    sampled, traj, _ = sample_positions(
+        model=model,
+        node_features=node_features,
+        edge_index=edge_index,
+        num_nodes=num_nodes,
+        device=device,
+        sample_steps=5,
+        beta_min=0.1,
+        beta_max=2.0,
+        score_clip=10.0,
+        position_clip=50.0,
+        noise_schedule="cosine",
+        reference_positions=reference_positions,
+        anchor_protein=True,
+        snr_consistent=True,
+    )
+
+    assert torch.isfinite(sampled).all()
+    assert len(traj) == 6
+    # Protein nodes (first 4) must strictly match reference_positions
+    assert torch.allclose(sampled[:4], reference_positions[:4], atol=1e-5)

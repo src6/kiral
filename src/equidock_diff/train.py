@@ -19,8 +19,10 @@ from equidock_diff.data.pipeline import load_protein_ligand_graph, load_protein_
 from equidock_diff.diffusion.schedules import (
     DEFAULT_COSINE_NU,
     DEFAULT_COSINE_OFFSET,
+    alpha_bar_for_schedule,
     beta_schedule_value,
     cosine_signal_amplitude,
+    step_beta_from_alpha,
 )
 from equidock_diff.diffusion.sde import SDEStep, forward_step, reverse_step
 from equidock_diff.models.egnn import EGNNConfig, infer_ligand_mask
@@ -92,6 +94,8 @@ RESUME_COMPAT_KEYS = (
     "beta_min",
     "beta_max",
     "noise_schedule",
+    "snr_consistent",
+    "snr_mode",
     "cosine_offset",
     "cosine_nu",
     "protein_path",
@@ -222,6 +226,19 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("linear", "cosine"),
         default="linear",
         help="Noise schedule for training and sampling",
+    )
+    parser.add_argument(
+        "--snr-consistent",
+        action="store_true",
+        help="Use exact SNR-preserving schedule math: forward noising via ᾱ(t) and "
+        "reverse steps via exact ancestral posterior sampling (report-consistent conventions)",
+    )
+    parser.add_argument(
+        "--snr-mode",
+        choices=("off", "train", "sampler", "full"),
+        default="off",
+        help="Apply the SNR-consistent correction to training noising only (train), "
+        "the ancestral sampler only (sampler), or both (full)",
     )
     parser.add_argument(
         "--cosine-offset",
@@ -584,6 +601,7 @@ def noised_positions_for_schedule(
     noise_schedule: str,
     cosine_offset: float,
     cosine_nu: float,
+    snr_consistent: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     beta_t = beta_schedule_value(
         t,
@@ -593,6 +611,22 @@ def noised_positions_for_schedule(
         cosine_offset=cosine_offset,
         cosine_nu=cosine_nu,
     )
+    if snr_consistent:
+        alpha_t = alpha_bar_for_schedule(
+            t,
+            beta_min,
+            beta_max,
+            noise_schedule=noise_schedule,
+            cosine_offset=cosine_offset,
+            cosine_nu=cosine_nu,
+        )
+        std_t = torch.sqrt(torch.clamp_min(1.0 - alpha_t, 1e-8))
+        noised_positions = (
+            _expand_schedule_value(torch.sqrt(alpha_t), clean_positions) * clean_positions
+            + _expand_schedule_value(std_t, clean_positions) * torch.randn_like(clean_positions)
+        )
+        return noised_positions, beta_t
+
     if noise_schedule == "cosine":
         alpha_bar_t = cosine_signal_amplitude(t, offset=cosine_offset, nu=cosine_nu)
         signal_scale = torch.sqrt(torch.clamp(alpha_bar_t, min=0.0, max=1.0))
@@ -720,6 +754,7 @@ def training_step(
     noise_schedule: str = "linear",
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
+    snr_consistent: bool = False,
 ) -> tuple[torch.Tensor, float]:
     frame_hetero_backbone = False
     model_config = getattr(model, "config", None)
@@ -742,6 +777,7 @@ def training_step(
         noise_schedule=noise_schedule,
         cosine_offset=cosine_offset,
         cosine_nu=cosine_nu,
+        snr_consistent=snr_consistent,
     )
     return loss, beta_t
 
@@ -899,6 +935,7 @@ def training_step_with_breakdown(
     noise_schedule: str = "linear",
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
+    snr_consistent: bool = False,
 ) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
         0.05, 0.95
@@ -915,6 +952,7 @@ def training_step_with_breakdown(
             noise_schedule=noise_schedule,
             cosine_offset=cosine_offset,
             cosine_nu=cosine_nu,
+            snr_consistent=snr_consistent,
         )
         target_score = torch.zeros_like(clean_positions)
         target_score[ligand_mask] = clean_positions[ligand_mask] - noised_positions[ligand_mask]
@@ -928,6 +966,7 @@ def training_step_with_breakdown(
             noise_schedule=noise_schedule,
             cosine_offset=cosine_offset,
             cosine_nu=cosine_nu,
+            snr_consistent=snr_consistent,
         )
         target_score = clean_positions - noised_positions
     predicted_score = model(node_features, noised_positions, edge_index, t)
@@ -1092,6 +1131,7 @@ def sample_positions(
     reference_positions: torch.Tensor | None = None,
     anchor_protein: bool = False,
     sampler_diagnostics: SamplerDiagnostics | None = None,
+    snr_consistent: bool = False,
 ) -> tuple[torch.Tensor, list[torch.Tensor], SamplerDiagnostics | None]:
     ligand_mask = infer_ligand_mask(node_features) if anchor_protein else None
     if anchor_protein:
@@ -1111,14 +1151,6 @@ def sample_positions(
     )
     step_diagnostics: list[SamplerStepDiagnostics] = []
     for loop_idx, (t, dt) in enumerate(schedule):
-        beta_t = beta_schedule_value(
-            t,
-            beta_min,
-            beta_max,
-            noise_schedule=noise_schedule,
-            cosine_offset=cosine_offset,
-            cosine_nu=cosine_nu,
-        )
         score = model(node_features, positions, edge_index, t)
         if anchor_protein and ligand_mask is not None:
             score = score.clone()
@@ -1131,13 +1163,55 @@ def sample_positions(
         )
         score = score_before_clip.clamp(-score_clip, score_clip)
         previous_positions = positions.detach().clone()
-        positions = reverse_step(
-            positions,
-            SDEStep(t=t, dt=dt),
-            score,
-            beta_t,
-            max_score_norm=score_clip,
-        )
+        if snr_consistent:
+            alpha_t = alpha_bar_for_schedule(
+                t,
+                beta_min,
+                beta_max,
+                noise_schedule=noise_schedule,
+                cosine_offset=cosine_offset,
+                cosine_nu=cosine_nu,
+            ).clamp(1e-6, 1.0 - 1e-6)
+            t_prev = torch.clamp(t - dt, min=0.0)
+            alpha_prev = alpha_bar_for_schedule(
+                t_prev,
+                beta_min,
+                beta_max,
+                noise_schedule=noise_schedule,
+                cosine_offset=cosine_offset,
+                cosine_nu=cosine_nu,
+            ).clamp(1e-6, 1.0 - 1e-6)
+            sigma_t = torch.sqrt(torch.clamp_min(1.0 - alpha_t, 1e-8))
+            x0_hat = positions + score
+            eps_hat = (positions - torch.sqrt(alpha_t) * x0_hat) / sigma_t
+            var = (1.0 - alpha_prev) / (1.0 - alpha_t) * torch.clamp_min(
+                1.0 - alpha_t / alpha_prev, 0.0
+            )
+            mu_coef = torch.sqrt(torch.clamp_min(1.0 - alpha_prev - var, 0.0))
+            noise = torch.randn_like(positions)
+            if loop_idx == len(schedule) - 1:
+                noise = torch.zeros_like(positions)
+            positions = (
+                torch.sqrt(alpha_prev) * x0_hat
+                + mu_coef * eps_hat
+                + torch.sqrt(var) * noise
+            )
+        else:
+            beta_t = beta_schedule_value(
+                t,
+                beta_min,
+                beta_max,
+                noise_schedule=noise_schedule,
+                cosine_offset=cosine_offset,
+                cosine_nu=cosine_nu,
+            )
+            positions = reverse_step(
+                positions,
+                SDEStep(t=t, dt=dt),
+                score,
+                beta_t,
+                max_score_norm=score_clip,
+            )
         positions = torch.nan_to_num(
             positions,
             nan=0.0,
@@ -1304,6 +1378,7 @@ def main(argv: list[str] | None = None) -> int:
             current_complex_id = current_example.complex_id
 
         optimizer.zero_grad(set_to_none=True)
+        train_snr = bool(args.snr_consistent or args.snr_mode in ("train", "full"))
         loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss, contact_loss = training_step_with_breakdown(
             model,
             node_features,
@@ -1320,6 +1395,7 @@ def main(argv: list[str] | None = None) -> int:
             noise_schedule=args.noise_schedule,
             cosine_offset=args.cosine_offset,
             cosine_nu=args.cosine_nu,
+            snr_consistent=train_snr,
         )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -1410,6 +1486,7 @@ def main(argv: list[str] | None = None) -> int:
                 experiment_log=str(args.experiment_log) if args.experiment_log is not None else None,
                 step_metrics=[],
             )
+        sampler_snr = bool(args.snr_consistent or args.snr_mode in ("sampler", "full"))
         sampled_positions, trajectory, sampler_diagnostics = sample_positions(
             model,
             node_features,
@@ -1428,6 +1505,7 @@ def main(argv: list[str] | None = None) -> int:
             reference_positions=positions,
             anchor_protein=args.frame_hetero_backbone,
             sampler_diagnostics=sampler_context,
+            snr_consistent=sampler_snr,
         )
     sample_path: Path | None = None
     trajectory_path: Path | None = None
