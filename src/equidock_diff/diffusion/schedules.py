@@ -65,11 +65,12 @@ def beta_schedule_value(
     noise_schedule: str,
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
+    exact: bool = False,
 ) -> torch.Tensor:
     if noise_schedule == "linear":
         return linear_beta(t, beta_min, beta_max)
     if noise_schedule == "cosine":
-        beta = cosine_beta(t, offset=cosine_offset, nu=cosine_nu)
+        beta = cosine_beta(t, offset=cosine_offset, nu=cosine_nu, exact=exact)
         return beta.clamp(min=beta_min, max=beta_max)
     raise ValueError(f"Unknown noise schedule: {noise_schedule!r}")
 

@@ -15,14 +15,14 @@ from equidock_diff.resample_from_checkpoint import main as resample_main
 
 
 def _run_diagnostics(argv: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="equidock diagnostics", description="Check hardware and ML environment")
+    parser = argparse.ArgumentParser(prog="kiral diagnostics", description="Check hardware and ML environment")
     parser.add_argument("--device", default="auto", help="Device name to check (auto, cuda, mps, cpu)")
     args = parser.parse_args(argv)
 
     resolved = resolve_device(args.device)
     info = get_device_benchmark_info(resolved)
 
-    print("=== Equidock-Diff Environment Diagnostics ===")
+    print("=== Kiral Environment Diagnostics ===")
     print(f"Version:              {__version__}")
     print(f"PyTorch Version:      {torch.__version__}")
     print(f"Resolved Device:      {resolved}")
@@ -42,8 +42,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv = sys.argv[1:]
 
     parser = argparse.ArgumentParser(
-        prog="equidock",
-        description="Equidock-Diff: High-throughput SE(3)-equivariant molecular docking engine",
+        prog="kiral",
+        description="Kiral: High-throughput SE(3)-equivariant molecular docking engine",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -76,7 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if argv[0] in ("-v", "--version"):
-        print(f"equidock {__version__}")
+        print(f"kiral {__version__}")
         return 0
 
     subcommand = argv[0]

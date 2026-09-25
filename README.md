@@ -1,4 +1,4 @@
-# Equidock-Diff
+# Kiral
 
 [![CI](https://github.com/src6/equidock-diff/actions/workflows/ci.yml/badge.svg)](https://github.com/src6/equidock-diff/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.13+-blue.svg)
@@ -6,8 +6,7 @@
 ![Equivariance](https://img.shields.io/badge/Equivariance-SE(3)-purple.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)
 
-**Equidock-Diff** is a high-throughput, leak-proof geometric deep learning engine for **blind and targeted protein-ligand molecular docking**. It parameterizes continuous **Variance-Preserving Stochastic Differential Equations (VP-SDE)** directly in 3D Cartesian coordinate space using orientation-preserving $\mathrm{SE}(3)$-equivariant frame backbones.
-
+**Kiral** is a high-throughput, leak-proof geometric deep learning engine for **blind and targeted protein-ligand molecular docking**. It parameterizes continuous **Variance-Preserving Stochastic Differential Equations (VP-SDE)** directly in 3D Cartesian coordinate space using orientation-preserving $\mathrm{SE}(3)$-equivariant frame backbones.
 ---
 
 ## Key Performance Metrics
@@ -59,11 +58,10 @@
                                   Physically Valid Docked Pose
 ```
 
-### Why $\mathrm{SE}(3)$ Matters over $\mathrm{E}(3)$
+### Why Chirality & $\mathrm{SE}(3)$ Matter over $\mathrm{E}(3)$
 Standard equivariant graph neural networks (EGNNs) update coordinates based solely on scalar distances and radial displacements. Because pairwise Euclidean distances are parity-symmetric (invariant under orthogonal reflections with $\det(R) = -1$), standard EGNNs are **$\mathrm{E}(3)$-equivariant**.
 
-Biological macromolecules are **chiral** (proteins consist exclusively of L-amino acids). A mirror reflection flips stereocenters, turning natural proteins into biologically non-functional enantiomers. Equidock-Diff constructs local orthonormal 3-vector frames via cross-products ($\mathbf{u} \times \mathbf{v}$), which are pseudo-vectors that change sign under reflections. This breaks reflection symmetry while preserving orientation, ensuring **strict $\mathrm{SE}(3)$-equivariance**.
-
+Biological macromolecules are **chiral** (proteins consist exclusively of L-amino acids). A mirror reflection flips stereocenters, turning natural proteins into biologically non-functional enantiomers. **Kiral** constructs local orthonormal 3-vector frames via cross-products ($\mathbf{u} \times \mathbf{v}$), which are pseudo-vectors that change sign under reflections. This breaks reflection symmetry while preserving orientation, ensuring **strict $\mathrm{SE}(3)$-equivariance**.
 ---
 
 ## Installation
@@ -81,22 +79,22 @@ uv sync --extra test
 
 ## Unified Command Line Interface (CLI)
 
-Equidock-Diff exposes a unified CLI executable (`equidock` or `equidock-diff`):
+Kiral exposes a unified CLI executable (`kiral`, with `equidock` and `equidock-diff` aliases for backward compatibility):
 
 ### 1. Hardware & Acceleration Diagnostics
 Verify available accelerators (CUDA, Apple Silicon MPS, CPU), BF16 Tensor Core support, and JIT compilation:
 ```bash
-uv run equidock diagnostics
+uv run kiral diagnostics
 ```
 
 ### 2. Docking & Training
 Train the equivariant score network or dock a query ligand against a receptor:
 ```bash
 # Synthetic demo (zero dataset required)
-uv run equidock dock --steps 50 --sample-steps 12 --noise-schedule cosine --frame-hetero-backbone
+uv run kiral dock --steps 50 --sample-steps 12 --noise-schedule cosine --frame-hetero-backbone
 
 # Real crystal complex with exact SNR consistency and BF16 AMP
-uv run equidock dock \
+uv run kiral dock \
   --protein-path /path/to/receptor_protein.pdb \
   --ligand-path /path/to/query_ligand.sdf \
   --noise-schedule cosine \
@@ -112,7 +110,7 @@ uv run equidock dock \
 ### 3. Fast Checkpoint Resampling
 Rerun reverse diffusion from an existing checkpoint with different solver settings (e.g. 10-step DPM-Solver++ or modified time spacing):
 ```bash
-uv run equidock resample \
+uv run kiral resample \
   --checkpoint path/to/checkpoint.pt \
   --sample-steps 12 \
   --snr-consistent \

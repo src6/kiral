@@ -488,8 +488,9 @@ def evaluate_steric_clashes(
             clash_pairs.append((l_idx, p_idx, d))
 
     clash_count = len(clash_pairs)
+    unique_clashing_ligands = len(set(p[0] for p in clash_pairs))
     total_ligand_atoms = int(is_ligand.sum().item())
-    clash_fraction = clash_count / max(total_ligand_atoms, 1)
+    clash_fraction = unique_clashing_ligands / max(total_ligand_atoms, 1)
     return clash_count, clash_fraction, clash_pairs
 
 

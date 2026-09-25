@@ -35,7 +35,7 @@ from equidock_diff.utils.artifacts import (
     write_pdb,
     write_trajectory_pdb,
 )
-from equidock_diff.utils.chemistry import ATOM_CLASH_RADII, ATOM_SYMBOLS
+from equidock_diff.utils.chemistry import ATOM_CLASH_RADII, ATOM_SYMBOLS, evaluate_chemical_validity
 from equidock_diff.utils.geometry import aligned_rmsd, random_rotation_matrix
 from equidock_diff.utils.plotting import maybe_write_plot
 
@@ -634,6 +634,7 @@ def noised_positions_for_schedule(
         noise_schedule=noise_schedule,
         cosine_offset=cosine_offset,
         cosine_nu=cosine_nu,
+        exact=snr_consistent,
     )
     if snr_consistent:
         alpha_t = alpha_bar_for_schedule(
@@ -688,7 +689,7 @@ def save_checkpoint(
         "node_feature_dim": node_feature_dim,
         "source_ids": source_ids,
         "saved_args": checkpoint_args_dict(args),
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": getattr(model, "_orig_mod", model).state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "torch_rng_state": torch.get_rng_state(),
     }
@@ -1571,6 +1572,19 @@ def main(argv: list[str] | None = None) -> int:
         extra_metrics["aligned_ligand_rmsd"] = aligned_ligand
         print(f"raw_ligand_rmse={raw_ligand_rmse:.6f}")
         print(f"aligned_ligand_rmsd={aligned_ligand:.6f}")
+        chem_report = evaluate_chemical_validity(
+            sampled_positions,
+            node_features,
+            ligand_bond_index=ligand_bond_index,
+            reference_positions=positions,
+        )
+        extra_metrics["clash_count"] = float(chem_report.clash_count)
+        extra_metrics["clash_fraction"] = float(chem_report.clash_fraction)
+        extra_metrics["bond_violation_count"] = float(chem_report.bond_violation_count)
+        extra_metrics["chemical_is_valid"] = 1.0 if chem_report.is_valid else 0.0
+        print(f"chemical_is_valid={'yes' if chem_report.is_valid else 'no'}")
+        print(f"clash_count={chem_report.clash_count} (fraction={chem_report.clash_fraction:.4f})")
+        print(f"bond_violation_count={chem_report.bond_violation_count}")
     plot_written = False
     if args.skip_plot:
         print("plot_path=skipped")
