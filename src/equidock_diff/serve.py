@@ -99,6 +99,16 @@ def _pipeline_args(args: argparse.Namespace) -> SimpleNamespace:
     )
 
 
+_ARCH_FLAGS = (
+    "hetero_edges",
+    "ligand_global_node",
+    "complete_frame",
+    "frame_hetero_backbone",
+    "use_edge_attention",
+    "use_cross_interface_block",
+)
+
+
 def _model_args(args: argparse.Namespace) -> SimpleNamespace:
     # the "frame backbone" arm, matching the dissertation panel
     return SimpleNamespace(
@@ -113,6 +123,26 @@ def _model_args(args: argparse.Namespace) -> SimpleNamespace:
     )
 
 
+def resolve_model_config(cli_args: argparse.Namespace, saved_args: dict | None) -> SimpleNamespace:
+    """Resolve the model architecture for serving.
+
+    A checkpoint's own saved configuration wins over the CLI defaults: serving a trained
+    model with a mismatched architecture either fails outright or, worse, silently
+    produces drift. CLI values remain the fallback when no checkpoint is supplied.
+    """
+    config = vars(_model_args(cli_args)).copy()
+    if saved_args:
+        for field in ("hidden_dim", "num_layers"):
+            value = saved_args.get(field)
+            if value is not None:
+                config[field] = int(value)
+        for field in _ARCH_FLAGS:
+            value = saved_args.get(field)
+            if value is not None:
+                config[field] = bool(value)
+    return SimpleNamespace(**config)
+
+
 class DockingEngine:
     """Load once, sample many. Batching is transparent to the caller."""
 
@@ -125,6 +155,7 @@ class DockingEngine:
         )
         self.model: torch.nn.Module | None = None
         self._paths: dict[str, object] | None = None
+        self._saved_args: dict | None = None
 
     # -- loading ---------------------------------------------------------------
     def _dataset_paths(self) -> dict[str, object]:
@@ -160,9 +191,19 @@ class DockingEngine:
             "bond_index": bond_index,
         }
 
+    def _checkpoint_saved_args(self) -> dict | None:
+        if self.args.checkpoint is None:
+            return None
+        if self._saved_args is None:
+            checkpoint = torch.load(self.args.checkpoint, map_location="cpu", weights_only=False)
+            saved = checkpoint.get("saved_args", {}) if isinstance(checkpoint, dict) else {}
+            self._saved_args = dict(saved)
+        return self._saved_args
+
     def _ensure_model(self, node_dim: int) -> torch.nn.Module:
         if self.model is None:
-            model = make_model_for_node_dim(_model_args(self.args), self.device, node_dim=node_dim)
+            config = resolve_model_config(self.args, self._checkpoint_saved_args())
+            model = make_model_for_node_dim(config, self.device, node_dim=node_dim)
             model = model.to(self.device).eval()
             if self.args.checkpoint is None:
                 if not self.args.allow_random_weights:
@@ -177,14 +218,11 @@ class DockingEngine:
                 state = load_checkpoint(
                     self.args.checkpoint, model=model, optimizer=optimizer, device=self.device
                 )
-                saved_hidden = state.saved_args.get("hidden_dim")
-                if saved_hidden is not None and int(saved_hidden) != int(self.args.hidden_dim):
-                    print(
-                        f"warning: checkpoint was trained with hidden_dim={saved_hidden}, "
-                        f"serving with {self.args.hidden_dim} - rebuild with --hidden-dim "
-                        f"{saved_hidden} for matching weights"
-                    )
-                print(f"checkpoint loaded: {self.args.checkpoint} (steps={state.completed_steps})")
+                print(
+                    f"checkpoint loaded: {self.args.checkpoint} (steps={state.completed_steps}, "
+                    f"hidden_dim={config.hidden_dim}, layers={config.num_layers}, "
+                    f"frame_backbone={config.frame_hetero_backbone})"
+                )
             if self.args.compile:
                 model = maybe_compile_model(model, enabled=True)
             self.model = model
