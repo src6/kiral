@@ -50,6 +50,9 @@ class PoseResult:
     chemical_is_valid: bool | None = None
     clash_fraction: float | None = None
     bond_violations: int | None = None
+    posebusters_passed: bool | None = None
+    posebusters_checks: str | None = None
+    posebusters_failing: str | None = None
 
 
 @dataclass
@@ -92,6 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--context-policy", default="fixed")
     p.add_argument("--hidden-dim", type=int, default=64)
     p.add_argument("--num-layers", type=int, default=3)
+    p.add_argument(
+        "--validity-out",
+        type=Path,
+        default=None,
+        help="Write each posed ligand here and score it with the PoseBusters reference checks",
+    )
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--allow-random-weights", action="store_true",
                    help="Run without a checkpoint (poses will be meaningless)")
@@ -210,6 +219,8 @@ class DockingEngine:
             "positions": positions,
             "edge_index": edge_index,
             "bond_index": bond_index,
+            "protein_path": example.protein_path,
+            "ligand_path": example.ligand_path,
         }
 
     def _ensure_model(self, node_dim: int) -> torch.nn.Module:
@@ -251,6 +262,21 @@ class DockingEngine:
             edges.append(g["edge_index"] + running)
             running += g["features"].size(0)
         return features, positions, torch.cat(edges, dim=1)
+
+    def _score_validity(self, graph: dict, sampled_ligand, reference_ligand, result: PoseResult) -> None:
+        """Score one pose with the reference checks, refusing to score an unverified mapping."""
+        from .pose_validity import evaluate_pose, write_posed_ligand
+
+        out_dir: Path = self.args.validity_out
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pose_path = out_dir / f"{result.complex}_pose.sdf"
+        if not write_posed_ligand(graph["ligand_path"], sampled_ligand, reference_ligand, pose_path):
+            print(f"  {result.complex}: pose not written (atom mapping unverified); validity skipped")
+            return
+        validity = evaluate_pose(pose_path, graph["ligand_path"], graph["protein_path"])
+        result.posebusters_passed = validity.passed
+        result.posebusters_checks = f"{validity.checks_passed}/{validity.checks_run}"
+        result.posebusters_failing = "; ".join(validity.failing_checks)
 
     def sample(self, complex_ids: list[str]) -> tuple[list[PoseResult], list[BatchTiming]]:
         results: list[PoseResult] = []
@@ -325,6 +351,8 @@ class DockingEngine:
                     result.chemical_is_valid = bool(report.is_valid)
                     result.clash_fraction = float(report.clash_fraction)
                     result.bond_violations = int(report.bond_violation_count)
+                if self.args.validity_out is not None and result.aligned_rmsd is not None:
+                    self._score_validity(graph, local_sampled[mask], local_reference[mask], result)
                 results.append(result)
                 if not self.args.quiet:
                     rmsd = f"{result.aligned_rmsd:.4f}" if result.aligned_rmsd is not None else "n/a"
@@ -368,6 +396,10 @@ def main(argv: list[str] | None = None) -> int:
           f"{total_poses * 60 / sampled_seconds:.1f} poses/min sampling-only")
     if rmsds:
         print(f"mean aligned RMSD  : {statistics.fmean(rmsds):.4f} A (n={len(rmsds)})")
+    scored = [r for r in results if r.posebusters_passed is not None]
+    if scored:
+        passed = sum(1 for r in scored if r.posebusters_passed)
+        print(f"posebusters        : {passed}/{len(scored)} poses valid ({100 * passed / len(scored):.0f}% pass rate)")
     if args.csv is not None:
         args.csv.parent.mkdir(parents=True, exist_ok=True)
         with args.csv.open("w", newline="") as fh:
