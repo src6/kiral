@@ -27,8 +27,16 @@ from equidock_diff.data.io import load_paths  # noqa: E402
 from equidock_diff.train import load_dataset_example  # noqa: E402
 from equidock_diff.utils.chemistry import evaluate_chemical_validity  # noqa: E402
 
-DATA_ROOT = Path.home() / "data" / "pdbbind_v2020"
+# the repository's documented root is repo-relative; the desktop keeps the dataset in $HOME
+DATA_ROOT_CANDIDATES = (Path("data/pdbbind_v2020"), Path.home() / "data" / "pdbbind_v2020")
 PANEL = ("10gs", "11gs", "1a30")
+
+
+def _data_root() -> Path | None:
+    for candidate in DATA_ROOT_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _pipeline_args() -> SimpleNamespace:
@@ -43,10 +51,11 @@ def _pipeline_args() -> SimpleNamespace:
 
 @pytest.fixture(scope="module")
 def loaded():
-    if not DATA_ROOT.exists():
-        pytest.skip(f"no PDBbind dataset at {DATA_ROOT}")
+    root = _data_root()
+    if root is None:
+        pytest.skip(f"no PDBbind dataset at {DATA_ROOT_CANDIDATES}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    paths = {p.complex_id: p for p in load_paths(DATA_ROOT)}
+    paths = {p.complex_id: p for p in load_paths(root)}
     graphs = {}
     for complex_id in PANEL:
         if complex_id not in paths:
@@ -60,7 +69,7 @@ def loaded():
 
 @pytest.mark.xfail(
     reason="gate flags crystal poses (clash fractions 0.46-0.58 measured 2026-09-25)",
-    strict=False,
+    strict=True,  # an XPASS must fail the suite, forcing this marker off once the gate is fixed
 )
 def test_crystal_pose_passes_the_validity_gate(loaded):
     device, graphs = loaded
