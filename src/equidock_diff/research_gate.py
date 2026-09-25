@@ -244,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"comparison_csv={args.output_csv}")
     if args.output_markdown is not None:
         print(f"summary_markdown={args.output_markdown}")
-    return 0
+    return 1 if gate_pass is False else 0
 
 
 if __name__ == "__main__":

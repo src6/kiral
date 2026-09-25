@@ -20,6 +20,11 @@ from equidock_diff.research_runner import (
     expand_run_specs,
     plan_runs,
 )
+from equidock_diff.remote_research_runner import (
+    local_git_sync_state,
+    resolve_sync_mode,
+    sync_remote_repo,
+)
 
 
 DEFAULT_DUAL_ROOT = Path("runs/dual")
@@ -487,7 +492,7 @@ def build_remote_runner_argv(unit: ScheduledUnit, args: argparse.Namespace) -> l
         "--remote-repo",
         str(args.remote_repo),
         "--sync-mode",
-        args.sync_mode,
+        "none",
         "--remote-dataset-target",
         str(args.remote_dataset_target) if args.remote_dataset_target is not None else "",
     ]
@@ -899,6 +904,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"dual_root={dual_root}")
         print(f"planned_units={len(units)}")
         return 0
+    has_remote_units = any(u.worker_pool != "local_cpu" for u in units)
+    if has_remote_units and not args.dry_run and args.sync_mode != "none":
+        local_root = Path.cwd()
+        git_state = local_git_sync_state(local_root)
+        resolved_mode = resolve_sync_mode(args.sync_mode, git_state)
+        sync_remote_repo(local_root, args, mode=resolved_mode, git_state=git_state)
+
 
     lock = threading.Lock()
     futures = []

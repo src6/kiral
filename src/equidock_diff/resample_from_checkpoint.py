@@ -127,6 +127,10 @@ def _apply_overrides(args: argparse.Namespace, cli_args: argparse.Namespace) -> 
         args.skip_pose_artifacts = True
     if cli_args.skip_plot:
         args.skip_plot = True
+    if cli_args.snr_consistent is not None:
+        args.snr_consistent = cli_args.snr_consistent
+    if cli_args.snr_mode is not None:
+        args.snr_mode = cli_args.snr_mode
     for name in PATH_OVERRIDE_NAMES:
         setattr(args, name, getattr(cli_args, name))
 

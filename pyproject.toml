@@ -1,7 +1,7 @@
 [project]
 name = "equidock-diff"
 version = "0.2.0"
-description = "Compact equivariant diffusion system for protein-ligand docking"
+description = "Kiral: High-throughput SE(3)-equivariant molecular docking engine"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -19,6 +19,7 @@ test = [
 ]
 
 [project.scripts]
+kiral = "equidock_diff.cli:main"
 equidock = "equidock_diff.cli:main"
 equidock-diff = "equidock_diff.cli:main"
 

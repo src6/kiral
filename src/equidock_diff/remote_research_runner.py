@@ -205,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sync-mode",
-        choices=("git", "rsync", "auto"),
+        choices=("git", "rsync", "auto", "none"),
         default="auto",
         help="How to update the remote dedicated clone before running",
     )
@@ -502,8 +502,9 @@ def sync_remote_repo(
     mode: str,
     git_state: GitSyncState,
 ) -> None:
+    if mode == "none":
+        return
     ensure_remote_repo_exists(args.remote_host, args.remote_repo)
-    maybe_start_remote_caffeinate(args)
     if mode == "git":
         if git_state.branch is None or git_state.upstream is None:
             raise ValueError("git sync requires a local branch with an upstream.")
@@ -533,6 +534,10 @@ def sync_remote_repo(
             "runs/research",
             "--exclude",
             "runs/remote",
+            "--exclude",
+            "data",
+            "--exclude",
+            "data/**",
             "--exclude",
             ".uv-cache",
             "--exclude",
