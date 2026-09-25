@@ -54,7 +54,7 @@ def test_a_stretched_bond_is_rejected(tmp_path):
     validity = evaluate_pose_ligand_only(path)
 
     assert not validity.passed
-    assert any("bond" in check for check in validity.failing_checks), validity.failing_checks
+    assert any("bond" in check.lower() for check in validity.failing_checks), validity.failing_checks
 
 
 def test_crystal_poses_pass_the_reference_checks(tmp_path):
@@ -97,3 +97,48 @@ def test_a_scrambled_pose_is_rejected(tmp_path):
     writer.close()
 
     assert not evaluate_pose(scrambled, ligand, protein).passed
+
+
+def test_a_reference_ligand_selects_the_redocking_configuration(monkeypatch, tmp_path):
+    """Passing a reference must actually enable the reference-dependent checks."""
+    import pandas as pd
+
+    from equidock_diff import pose_validity
+
+    seen: dict[str, str] = {}
+
+    class StubBuster:
+        def bust(self, **_kwargs):
+            return pd.DataFrame({"file": ["x"], "molecule": ["y"], "Bond lengths": [True]})
+
+    def fake_buster(config):
+        seen["config"] = config
+        return StubBuster()
+
+    monkeypatch.setattr(pose_validity, "_buster", fake_buster)
+    ligand = tmp_path / "ligand.sdf"
+    ligand.write_text("")
+
+    assert pose_validity.evaluate_pose(ligand).passed
+    assert seen["config"] == "dock"
+
+    assert pose_validity.evaluate_pose(ligand, ligand, ligand).passed
+    assert seen["config"] == "redock"
+
+
+def test_validate_cli_propagates_the_verdict(monkeypatch, tmp_path):
+    """The command must exit non-zero on an invalid pose so scripts can gate on it."""
+    from equidock_diff import pose_validity
+
+    ligand = tmp_path / "ligand.sdf"
+    ligand.write_text("")
+
+    monkeypatch.setattr(
+        pose_validity, "evaluate_pose", lambda *a, **k: pose_validity.PoseValidity(False, 22, 20, ("Bond lengths",))
+    )
+    assert pose_validity.main(["--sampled", str(ligand)]) == 1
+
+    monkeypatch.setattr(
+        pose_validity, "evaluate_pose", lambda *a, **k: pose_validity.PoseValidity(True, 22, 22, ())
+    )
+    assert pose_validity.main(["--sampled", str(ligand)]) == 0

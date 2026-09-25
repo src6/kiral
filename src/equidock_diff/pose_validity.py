@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_CONFIG = "dock"
+_REDOCK_CONFIG = "redock"
 _LIGAND_ONLY_CONFIG = "mol"
 _NON_CHECK_COLUMNS = ("file", "molecule", "time")
 
@@ -57,7 +58,7 @@ def evaluate_pose(
     true_ligand: str | Path | None = None,
     protein: str | Path | None = None,
     *,
-    config: str = DEFAULT_CONFIG,
+    config: str | None = None,
 ) -> PoseValidity:
     """Run the reference validity checks on one posed ligand.
 
@@ -66,13 +67,19 @@ def evaluate_pose(
     may be sdf/mol2/pdb; ``protein`` is required for the docking configuration and omitted for the
     ligand-only one. Passing ``true_ligand`` enables the redocking checks that need a reference.
     """
+    resolved_config = config
+    if resolved_config is None:
+        # "dock" omits the reference-dependent checks, so passing a reference ligand without
+        # changing the configuration would silently do nothing. Use the redocking set instead.
+        resolved_config = _REDOCK_CONFIG if true_ligand is not None else DEFAULT_CONFIG
+
     kwargs: dict[str, Path] = {"mol_pred": Path(sampled_ligand)}
     if true_ligand is not None:
         kwargs["mol_true"] = Path(true_ligand)
     if protein is not None:
         kwargs["mol_cond"] = Path(protein)
 
-    frame = _buster(config).bust(**kwargs)
+    frame = _buster(resolved_config).bust(**kwargs)
     checks = [column for column in frame.columns if column not in _NON_CHECK_COLUMNS]
     failing = tuple(column for column in checks if not bool(frame[column].all()))
     return PoseValidity(
@@ -108,8 +115,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.config is not None:
         config = args.config
+    elif args.true is not None and args.protein is not None:
+        config = _REDOCK_CONFIG
+    elif args.protein is not None:
+        config = DEFAULT_CONFIG
     else:
-        config = DEFAULT_CONFIG if args.protein is not None else _LIGAND_ONLY_CONFIG
+        config = _LIGAND_ONLY_CONFIG
     validity = evaluate_pose(args.sampled, args.true, args.protein, config=config)
     print(f"config={config}")
     print(f"posebusters={validity.describe()}")
