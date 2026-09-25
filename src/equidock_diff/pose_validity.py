@@ -19,6 +19,8 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
+import torch
+
 DEFAULT_CONFIG = "dock"
 _REDOCK_CONFIG = "redock"
 _LIGAND_ONLY_CONFIG = "mol"
@@ -129,3 +131,61 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def write_posed_ligand(
+    true_ligand: str | Path,
+    sampled_positions,
+    reference_positions,
+    out_path: str | Path,
+    *,
+    tolerance: float = 1e-2,
+) -> bool:
+    """Write a posed ligand as SDF, transplanting sampled coordinates onto the reference molecule.
+
+    The graph's ligand atoms must correspond in order to the heavy atoms of ``true_ligand``, and the
+    graph lives in a recentred frame while the file does not. Both are checked with rigid-invariant
+    tests before anything is written: the graph's own view of the crystal pose is aligned onto the
+    file, and the pairing is only accepted if that alignment is essentially exact. A permutation or a
+    frame mistake would otherwise yield plausible-looking validity numbers computed from mismatched
+    atoms, so a mismatch returns False rather than guessing.
+
+    Returns True when a pose file was written.
+    """
+    from rdkit import Chem
+
+    from .utils.geometry import kabsch_align
+
+    molecule = Chem.MolFromMolFile(str(true_ligand))
+    if molecule is None:
+        molecule = Chem.MolFromMol2File(str(true_ligand))
+    if molecule is None:
+        return False
+    heavy = Chem.RemoveHs(molecule)
+    count = heavy.GetNumAtoms()
+    if count != len(sampled_positions):
+        return False
+
+    conformer = heavy.GetConformer()
+    file_positions = torch.tensor(
+        [[conformer.GetAtomPosition(i).x, conformer.GetAtomPosition(i).y, conformer.GetAtomPosition(i).z]
+         for i in range(count)],
+        dtype=torch.float64,
+    )
+    reference = torch.as_tensor(reference_positions, dtype=torch.float64).cpu()
+    if reference.shape != file_positions.shape:
+        return False
+
+    aligned_reference = kabsch_align(reference, file_positions)
+    mapping_error = float(torch.sqrt(torch.mean((aligned_reference - file_positions) ** 2)))
+    if mapping_error > tolerance:
+        return False
+
+    posed = kabsch_align(torch.as_tensor(sampled_positions, dtype=torch.float64).cpu(), file_positions)
+    for index in range(count):
+        conformer.SetAtomPosition(index, (float(posed[index, 0]), float(posed[index, 1]), float(posed[index, 2])))
+
+    writer = Chem.SDWriter(str(out_path))
+    writer.write(heavy)
+    writer.close()
+    return True

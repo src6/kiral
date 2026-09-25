@@ -142,3 +142,31 @@ def test_validate_cli_propagates_the_verdict(monkeypatch, tmp_path):
         pose_validity, "evaluate_pose", lambda *a, **k: pose_validity.PoseValidity(True, 22, 22, ())
     )
     assert pose_validity.main(["--sampled", str(ligand)]) == 0
+
+
+def test_write_posed_ligand_refuses_when_the_mapping_cannot_be_verified(tmp_path):
+    """A mis-paired pose would give plausible numbers from the wrong atoms: refuse instead."""
+    panel = _panel_dir()
+    if panel is None:
+        pytest.skip(f"no PDBbind dataset at {DATA_ROOT_CANDIDATES}")
+    import torch
+
+    from equidock_diff.pose_validity import write_posed_ligand
+
+    ligand = panel / "10gs" / "10gs_ligand.sdf"
+    if not ligand.exists():
+        pytest.skip(f"10gs missing from {panel}")
+
+    molecule = Chem.RemoveHs(Chem.MolFromMolFile(str(ligand), removeHs=False))
+    count = molecule.GetNumAtoms()
+    conformer = molecule.GetConformer()
+    file_positions = torch.tensor(
+        [[conformer.GetAtomPosition(i).x, conformer.GetAtomPosition(i).y, conformer.GetAtomPosition(i).z]
+         for i in range(count)],
+        dtype=torch.float64,
+    )
+    assert write_posed_ligand(ligand, file_positions, file_positions, tmp_path / "ok.sdf")
+
+    permuted = file_positions[torch.roll(torch.arange(count), 1)]
+    assert not write_posed_ligand(ligand, file_positions, permuted, tmp_path / "bad.sdf")
+    assert not (tmp_path / "bad.sdf").exists()
