@@ -61,6 +61,13 @@ docs/training/**
 !docs/training/panel20/variance_mps/cross_complex_comparison_variance.tex
 !docs/training/showcase/
 !docs/training/showcase/*.png
+!docs/training/sampler_fix/
+!docs/training/sampler_fix/README.md
+!docs/training/sampler_fix/rerun_results.csv
+!docs/training/sampler_fix/rerun_ablation.csv
+!docs/training/sampler_fix/rerun_snr_panel.py
+!docs/training/sampler_fix/schedule_fix.patch
+!docs/training/sampler_fix/comparison_summary.txt
 PROJECT_SPEC.md
 
 # Large local data archives
