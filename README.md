@@ -1,12 +1,12 @@
 # Kiral
 
-[![CI](https://github.com/src6/equidock-diff/actions/workflows/ci.yml/badge.svg)](https://github.com/src6/equidock-diff/actions/workflows/ci.yml)
+[![CI](https://github.com/src6/kiral/actions/workflows/ci.yml/badge.svg)](https://github.com/src6/kiral/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.13+-blue.svg)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.10+-ee4c2c.svg)
 ![Equivariance](https://img.shields.io/badge/Equivariance-SE(3)-purple.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)
 
-**Kiral** is a high-throughput, leak-proof geometric deep learning engine for **blind and targeted protein-ligand molecular docking**. It parameterizes continuous **Variance-Preserving Stochastic Differential Equations (VP-SDE)** directly in 3D Cartesian coordinate space using orientation-preserving $\mathrm{SE}(3)$-equivariant frame backbones.
+**Kiral** is a reproducible molecular-docking research engine combining chirality-aware $\mathrm{SE}(3)$-equivariant geometric learning with VP-SDE diffusion for blind and targeted protein–ligand docking.
 ---
 
 ## Key Performance Metrics
@@ -68,8 +68,8 @@ Biological macromolecules are **chiral** (proteins consist exclusively of L-amin
 
 ```bash
 # Clone the repository
-git clone https://github.com/src6/equidock-diff.git
-cd equidock-diff
+git clone https://github.com/src6/kiral.git
+cd kiral
 
 # Sync virtual environment and dependencies using uv
 uv sync --extra test

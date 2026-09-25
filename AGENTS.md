@@ -4,7 +4,7 @@ This file is for future coding agents working in this repository. It is intended
 
 ## Repo Purpose
 
-`equidock-diff` is a protein-ligand docking research repo built around:
+`Kiral` is a protein–ligand docking research repo built around:
 
 - graph construction for protein-ligand pairs
 - EGNN baseline and heterogeneous frame-backbone variants
