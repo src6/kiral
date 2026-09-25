@@ -14,8 +14,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path.cwd()
 DATA = Path.home() / "data" / "pdbbind_v2020"
+DEVICE = "cuda"
 PANEL = ROOT / "config" / "evaluation" / "dissertation_panel20.txt"
 
 METRIC_RE = {
@@ -42,7 +43,7 @@ def run_one(complex_id: str, model: str, schedule: str, seed: int, mode: str, ou
     run_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "uv", "run", "python", "-m", "equidock_diff.train",
-        "--device", "cpu",
+        "--device", DEVICE,
         "--seed", str(seed),
         "--steps", "100",
         "--sample-steps", "25",
@@ -76,12 +77,17 @@ def run_one(complex_id: str, model: str, schedule: str, seed: int, mode: str, ou
 
 
 def main() -> int:
+    global DEVICE, ROOT
     parser = argparse.ArgumentParser()
     parser.add_argument("--modes", default="", help="comma list: legacy,snr,train,sampler")
     parser.add_argument("--quick", action="store_true", help="only 10gs, seed 42")
     parser.add_argument("--seeds", default="42,43")
     parser.add_argument("--out", type=Path, default=ROOT / "rerun_results.csv")
+    parser.add_argument("--device", default="cuda", help="cuda or cpu")
+    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     args = parser.parse_args()
+    DEVICE = args.device
+    ROOT = args.repo_root.resolve()
 
     complexes = ["10gs"] if args.quick else [
         line.strip() for line in PANEL.read_text().splitlines()
