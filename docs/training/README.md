@@ -42,6 +42,8 @@ Full exploratory histories, raw per-run logs, bulk loss traces, sample structure
 
 - `docs/training/checkpoint_resume.md`
   - checkpoint/resume support for longer training runs
+- `docs/training/sampler_fix/`
+  - post-submission sampler audit (convention flip, factor-of-2 in beta, clamp-induced train/sampler SNR divergence, linear-mode integral shortcut) with the corrected panel re-run on identical trained weights: frame + cosine 1.20 -> 0.35 A, 20/20 complexes, paired sign test p = 1.9e-06
 - `config/evaluation/dissertation_panel20.txt`
   - the fixed complex manifest used by the canonical summary commands
 - `docs/training/panel20/frame_backbone_cosine_tuning/`
