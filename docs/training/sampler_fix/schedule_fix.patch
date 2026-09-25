@@ -1,0 +1,268 @@
+diff -r /Users/sadik/Documents/memex/projects/fyp-equidock-diff/raw/submission/repo/src/equidock_diff/diffusion/schedules.py repo/src/equidock_diff/diffusion/schedules.py
+--- /Users/sadik/Documents/memex/projects/fyp-equidock-diff/raw/submission/repo/src/equidock_diff/diffusion/schedules.py	2026-03-27 23:50:53.000000000 +0000
++++ repo/src/equidock_diff/diffusion/schedules.py	2026-09-02 11:32:19.243451889 +0100
+@@ -68,3 +68,54 @@
+         beta = cosine_beta(t, offset=cosine_offset, nu=cosine_nu)
+         return beta.clamp(min=beta_min, max=beta_max)
+     raise ValueError(f"Unknown noise schedule: {noise_schedule!r}")
++
++
++def alpha_bar_for_schedule(
++    t: torch.Tensor,
++    beta_min: float,
++    beta_max: float,
++    *,
++    noise_schedule: str,
++    cosine_offset: float = DEFAULT_COSINE_OFFSET,
++    cosine_nu: float = DEFAULT_COSINE_NU,
++) -> torch.Tensor:
++    """Signal variance retention ᾱ(t) as the report's schedule definitions intend.
++
++    Linear: ᾱ = exp(-∫₀ᵗ β) with the exact integral (not the β(t)·t shortcut).
++    Cosine: ᾱ = cos²(π/2 · (t+s)^ν / (1+s)), i.e. the report's α_t is the VARIANCE
++    retention (Nichol–Dhariwal convention), so the x0 std coefficient is √ᾱ.
++    """
++    if noise_schedule == "linear":
++        return torch.exp(-integrated_beta(t, beta_min, beta_max))
++    if noise_schedule == "cosine":
++        return cosine_signal_amplitude(t, offset=cosine_offset, nu=cosine_nu)
++    raise ValueError(f"Unknown noise schedule: {noise_schedule!r}")
++
++
++def step_beta_from_alpha(
++    t: torch.Tensor,
++    dt: torch.Tensor,
++    beta_min: float,
++    beta_max: float,
++    *,
++    noise_schedule: str,
++    cosine_offset: float = DEFAULT_COSINE_OFFSET,
++    cosine_nu: float = DEFAULT_COSINE_NU,
++    alpha_floor: float = 1e-6,
++) -> torch.Tensor:
++    """Effective β for one reverse step, defined by ∫_{t-dt}^{t} β = log ᾱ(t−dt) − log ᾱ(t).
++
++    Makes the reverse solver's accumulated SNR path match the forward process used
++    in training exactly, with no [beta_min, beta_max] clamp distorting the path.
++    """
++    t_prev = torch.clamp(t - dt, min=0.0)
++    alpha_t = alpha_bar_for_schedule(
++        t, beta_min, beta_max,
++        noise_schedule=noise_schedule, cosine_offset=cosine_offset, cosine_nu=cosine_nu,
++    ).clamp(min=alpha_floor)
++    alpha_prev = alpha_bar_for_schedule(
++        t_prev, beta_min, beta_max,
++        noise_schedule=noise_schedule, cosine_offset=cosine_offset, cosine_nu=cosine_nu,
++    ).clamp(min=alpha_floor)
++    beta_dt = torch.clamp_min(torch.log(alpha_prev) - torch.log(alpha_t), 1e-6)
++    return beta_dt / dt
+diff -r /Users/sadik/Documents/memex/projects/fyp-equidock-diff/raw/submission/repo/src/equidock_diff/train.py repo/src/equidock_diff/train.py
+--- /Users/sadik/Documents/memex/projects/fyp-equidock-diff/raw/submission/repo/src/equidock_diff/train.py	2026-03-27 23:50:53.000000000 +0000
++++ repo/src/equidock_diff/train.py	2026-09-02 11:56:00.095702346 +0100
+@@ -18,6 +18,7 @@
+ from equidock_diff.diffusion.schedules import (
+     DEFAULT_COSINE_NU,
+     DEFAULT_COSINE_OFFSET,
++    alpha_bar_for_schedule,
+     beta_schedule_value,
+     cosine_signal_amplitude,
+ )
+@@ -58,6 +59,8 @@
+     "beta_min",
+     "beta_max",
+     "noise_schedule",
++    "snr_consistent",
++    "snr_mode",
+     "cosine_offset",
+     "cosine_nu",
+     "protein_path",
+@@ -142,6 +145,19 @@
+     parser.add_argument("--beta-min", type=float, default=0.1, help="VP-SDE beta minimum")
+     parser.add_argument("--beta-max", type=float, default=2.0, help="VP-SDE beta maximum")
+     parser.add_argument(
++        "--snr-consistent",
++        action="store_true",
++        help="Use exact SNR-preserving schedule math: forward noising via ᾱ(t) and "
++        "reverse steps via per-step log-ᾱ ratios (report-consistent conventions)",
++    )
++    parser.add_argument(
++        "--snr-mode",
++        choices=("off", "train", "sampler", "full"),
++        default="off",
++        help="Apply the SNR-consistent correction to training noising only (train), "
++        "the ancestral sampler only (sampler), or both (full)",
++    )
++    parser.add_argument(
+         "--noise-schedule",
+         choices=("linear", "cosine"),
+         default="linear",
+@@ -443,6 +459,7 @@
+     noise_schedule: str,
+     cosine_offset: float,
+     cosine_nu: float,
++    snr_consistent: bool = False,
+ ) -> tuple[torch.Tensor, torch.Tensor]:
+     beta_t = beta_schedule_value(
+         t,
+@@ -452,6 +469,21 @@
+         cosine_offset=cosine_offset,
+         cosine_nu=cosine_nu,
+     )
++    if snr_consistent:
++        alpha_t = alpha_bar_for_schedule(
++            t,
++            beta_min,
++            beta_max,
++            noise_schedule=noise_schedule,
++            cosine_offset=cosine_offset,
++            cosine_nu=cosine_nu,
++        )
++        std_t = torch.sqrt(torch.clamp_min(1.0 - alpha_t, 1e-8))
++        noised_positions = (
++            _expand_schedule_value(torch.sqrt(alpha_t), clean_positions) * clean_positions
++            + _expand_schedule_value(std_t, clean_positions) * torch.randn_like(clean_positions)
++        )
++        return noised_positions, beta_t
+     if noise_schedule == "cosine":
+         alpha_t = cosine_signal_amplitude(t, offset=cosine_offset, nu=cosine_nu)
+         sigma_t = torch.sqrt(torch.clamp_min(1.0 - alpha_t**2, 1e-8))
+@@ -578,6 +610,7 @@
+     noise_schedule: str = "linear",
+     cosine_offset: float = DEFAULT_COSINE_OFFSET,
+     cosine_nu: float = DEFAULT_COSINE_NU,
++    snr_consistent: bool = False,
+ ) -> tuple[torch.Tensor, float]:
+     frame_hetero_backbone = False
+     model_config = getattr(model, "config", None)
+@@ -597,6 +630,7 @@
+         noise_schedule=noise_schedule,
+         cosine_offset=cosine_offset,
+         cosine_nu=cosine_nu,
++        snr_consistent=snr_consistent,
+     )
+     return loss, beta_t
+ 
+@@ -635,6 +669,7 @@
+     noise_schedule: str = "linear",
+     cosine_offset: float = DEFAULT_COSINE_OFFSET,
+     cosine_nu: float = DEFAULT_COSINE_NU,
++    snr_consistent: bool = False,
+ ) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor]:
+     t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
+         0.05, 0.95
+@@ -650,6 +685,7 @@
+             noise_schedule=noise_schedule,
+             cosine_offset=cosine_offset,
+             cosine_nu=cosine_nu,
++            snr_consistent=snr_consistent,
+         )
+         target_score = torch.zeros_like(clean_positions)
+         target_score[ligand_mask] = clean_positions[ligand_mask] - noised_positions[ligand_mask]
+@@ -663,6 +699,7 @@
+             noise_schedule=noise_schedule,
+             cosine_offset=cosine_offset,
+             cosine_nu=cosine_nu,
++            snr_consistent=snr_consistent,
+         )
+         target_score = clean_positions - noised_positions
+     predicted_score = model(node_features, noised_positions, edge_index, t)
+@@ -701,6 +738,7 @@
+     cosine_nu: float = DEFAULT_COSINE_NU,
+     reference_positions: torch.Tensor | None = None,
+     anchor_protein: bool = False,
++    snr_consistent: bool = False,
+ ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+     ligand_mask = infer_ligand_mask(node_features) if anchor_protein else None
+     if anchor_protein:
+@@ -717,27 +755,59 @@
+         t = torch.tensor(
+             (step_idx + 1) / sample_steps, device=device, dtype=torch.float32
+         )
+-        beta_t = beta_schedule_value(
+-            t,
+-            beta_min,
+-            beta_max,
+-            noise_schedule=noise_schedule,
+-            cosine_offset=cosine_offset,
+-            cosine_nu=cosine_nu,
+-        )
+         score = model(node_features, positions, edge_index, t)
+         if anchor_protein and ligand_mask is not None:
+             score = score.clone()
+             score[~ligand_mask] = 0.0
+         score = torch.nan_to_num(score, nan=0.0, posinf=score_clip, neginf=-score_clip)
+         score = score.clamp(-score_clip, score_clip)
+-        positions = reverse_step(
+-            positions,
+-            SDEStep(t=t, dt=dt),
+-            score,
+-            beta_t,
+-            max_score_norm=score_clip,
+-        )
++        if snr_consistent:
++            alpha_t = alpha_bar_for_schedule(
++                t, beta_min, beta_max,
++                noise_schedule=noise_schedule,
++                cosine_offset=cosine_offset,
++                cosine_nu=cosine_nu,
++            ).clamp(1e-6, 1.0 - 1e-6)
++            t_prev = torch.tensor(
++                step_idx / sample_steps, device=device, dtype=torch.float32
++            )
++            alpha_prev = alpha_bar_for_schedule(
++                t_prev, beta_min, beta_max,
++                noise_schedule=noise_schedule,
++                cosine_offset=cosine_offset,
++                cosine_nu=cosine_nu,
++            ).clamp(1e-6, 1.0 - 1e-6)
++            # Repo convention: the model predicts the displacement x0 - x_t,
++            # so x0_hat = x_t + score. Step through the exact ancestral
++            # posterior q(x_prev | x_t, x0) for arbitrary SNR gaps.
++            sigma_t = torch.sqrt(torch.clamp_min(1.0 - alpha_t, 1e-8))
++            x0_hat = positions + score
++            eps_hat = (positions - torch.sqrt(alpha_t) * x0_hat) / sigma_t
++            var = (1.0 - alpha_prev) / (1.0 - alpha_t) * torch.clamp_min(
++                1.0 - alpha_t / alpha_prev, 0.0
++            )
++            mu_coef = torch.sqrt(torch.clamp_min(1.0 - alpha_prev - var, 0.0))
++            positions = (
++                torch.sqrt(alpha_prev) * x0_hat
++                + mu_coef * eps_hat
++                + torch.sqrt(var) * torch.randn_like(positions)
++            )
++        else:
++            beta_t = beta_schedule_value(
++                t,
++                beta_min,
++                beta_max,
++                noise_schedule=noise_schedule,
++                cosine_offset=cosine_offset,
++                cosine_nu=cosine_nu,
++            )
++            positions = reverse_step(
++                positions,
++                SDEStep(t=t, dt=dt),
++                score,
++                beta_t,
++                max_score_norm=score_clip,
++            )
+         positions = torch.nan_to_num(
+             positions,
+             nan=0.0,
+@@ -853,6 +923,7 @@
+             noise_schedule=args.noise_schedule,
+             cosine_offset=args.cosine_offset,
+             cosine_nu=args.cosine_nu,
++            snr_consistent=args.snr_consistent or args.snr_mode in ("train", "full"),
+         )
+         loss.backward()
+         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+@@ -932,6 +1003,7 @@
+             noise_schedule=args.noise_schedule,
+             cosine_offset=args.cosine_offset,
+             cosine_nu=args.cosine_nu,
++            snr_consistent=args.snr_consistent or args.snr_mode in ("sampler", "full"),
+             reference_positions=positions,
+             anchor_protein=args.frame_hetero_backbone,
+         )
+Only in repo/src: equidock_diff.egg-info
