@@ -12,6 +12,7 @@ from equidock_diff import __version__
 from equidock_diff.models.amp_utils import get_device_benchmark_info
 from equidock_diff.train import main as train_main, resolve_device
 from equidock_diff.resample_from_checkpoint import main as resample_main
+from equidock_diff.serve import main as serve_main
 
 
 def _run_diagnostics(argv: Sequence[str]) -> int:
@@ -59,6 +60,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # resample subcommand
     subparsers.add_parser(
+        "serve",
+        help="Sample many complexes in batches from a single process (throughput mode)",
+    )
+    subparsers.add_parser(
         "resample",
         help="Rerun reverse diffusion from an existing checkpoint with custom sampler settings",
         add_help=False,
@@ -88,6 +93,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if subcommand == "dock":
         return train_main(remaining)
+    elif subcommand == "serve":
+        return serve_main(remaining)
     elif subcommand == "resample":
         return resample_main(remaining)
     elif subcommand == "diagnostics":
