@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from equidock_diff.serve import resolve_model_config
 
 
@@ -50,3 +52,16 @@ def test_unrelated_saved_keys_are_ignored():
 
     assert config.hidden_dim == 64
     assert config.num_layers == 3
+
+
+def test_serve_rejects_a_checkpoint_without_saved_args(tmp_path):
+    """Guessing an architecture silently is worse than refusing to serve."""
+    torch = pytest.importorskip("torch")
+    from equidock_diff.serve import DockingEngine, build_parser
+
+    checkpoint = tmp_path / "no_saved_args.pt"
+    torch.save({"model_state_dict": {}, "optimizer_state_dict": {}, "completed_steps": 0}, checkpoint)
+    args = build_parser().parse_args(["--checkpoint", str(checkpoint), "--allow-random-weights"])
+
+    with pytest.raises(SystemExit, match="saved_args"):
+        DockingEngine(args)

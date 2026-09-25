@@ -30,6 +30,8 @@ from .models.amp_utils import get_autocast_context, maybe_compile_model
 from .train import (
     DEFAULT_COSINE_NU,
     DEFAULT_COSINE_OFFSET,
+    load_checkpoint,
+    load_checkpoint_payload,
     load_dataset_example,
     make_model_for_node_dim,
     sample_positions,
@@ -155,7 +157,19 @@ class DockingEngine:
         )
         self.model: torch.nn.Module | None = None
         self._paths: dict[str, object] | None = None
+        self._payload: dict | None = None
         self._saved_args: dict | None = None
+        self._config: SimpleNamespace | None = None
+        if args.checkpoint is not None:
+            self._payload = load_checkpoint_payload(args.checkpoint, self.device)
+            saved = self._payload.get("saved_args") if isinstance(self._payload, dict) else None
+            if not saved:
+                raise SystemExit(
+                    f"{args.checkpoint} carries no saved_args, so serving it would guess the "
+                    "architecture. Use a checkpoint written by the training CLI."
+                )
+            self._saved_args = dict(saved)
+        self._config = resolve_model_config(args, self._saved_args)
 
     # -- loading ---------------------------------------------------------------
     def _dataset_paths(self) -> dict[str, object]:
@@ -191,18 +205,9 @@ class DockingEngine:
             "bond_index": bond_index,
         }
 
-    def _checkpoint_saved_args(self) -> dict | None:
-        if self.args.checkpoint is None:
-            return None
-        if self._saved_args is None:
-            checkpoint = torch.load(self.args.checkpoint, map_location="cpu", weights_only=False)
-            saved = checkpoint.get("saved_args", {}) if isinstance(checkpoint, dict) else {}
-            self._saved_args = dict(saved)
-        return self._saved_args
-
     def _ensure_model(self, node_dim: int) -> torch.nn.Module:
         if self.model is None:
-            config = resolve_model_config(self.args, self._checkpoint_saved_args())
+            config = self._config
             model = make_model_for_node_dim(config, self.device, node_dim=node_dim)
             model = model.to(self.device).eval()
             if self.args.checkpoint is None:
@@ -212,11 +217,13 @@ class DockingEngine:
                         "or --allow-random-weights if you only want to time the plumbing")
                 print("warning: no --checkpoint, poses come from random weights and are meaningless")
             else:
-                from .train import load_checkpoint
-
                 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
                 state = load_checkpoint(
-                    self.args.checkpoint, model=model, optimizer=optimizer, device=self.device
+                    self.args.checkpoint,
+                    model=model,
+                    optimizer=optimizer,
+                    device=self.device,
+                    payload=self._payload,
                 )
                 print(
                     f"checkpoint loaded: {self.args.checkpoint} (steps={state.completed_steps}, "
@@ -269,7 +276,7 @@ class DockingEngine:
                     cosine_offset=DEFAULT_COSINE_OFFSET,
                     cosine_nu=DEFAULT_COSINE_NU,
                     reference_positions=positions,
-                    anchor_protein=True,
+                    anchor_protein=bool(self._config.frame_hetero_backbone),
                     snr_consistent=self.args.snr_consistent,
                 )
             if self.device.type == "cuda":
