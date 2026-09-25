@@ -1082,3 +1082,14 @@ def test_sample_positions_snr_consistent_ancestral_sampler() -> None:
     assert len(traj) == 6
     # Protein nodes (first 4) must strictly match reference_positions
     assert torch.allclose(sampled[:4], reference_positions[:4], atol=1e-5)
+
+
+def test_resolve_device_options() -> None:
+    from equidock_diff.train import resolve_device
+
+    assert resolve_device("cpu") == torch.device("cpu")
+    auto_dev = resolve_device("auto")
+    assert isinstance(auto_dev, torch.device)
+    # On non-CUDA machines, cuda requests gracefully fall back to cpu without crashing
+    if not torch.cuda.is_available():
+        assert resolve_device("cuda") == torch.device("cpu")
