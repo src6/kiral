@@ -144,6 +144,8 @@ def bench(args, graphs, device) -> list[dict]:
             continue
         subset = graphs[:batch]
         features, positions, edge_index, _ = stack(subset, device)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats()
         torch.manual_seed(args.seed)
         model = make_model_for_node_dim(model_args(args), device, node_dim=features.size(-1))
         model = model.to(device).eval()
@@ -178,6 +180,9 @@ def bench(args, graphs, device) -> list[dict]:
         rows.append(
             {
                 "batch": batch,
+                "vram_peak_gb": round(torch.cuda.max_memory_allocated() / 1e9, 3)
+                if device.type == "cuda"
+                else 0.0,
                 "nodes": int(features.size(0)),
                 "edges": int(edge_index.size(1)),
                 "nodes_per_complex": round(features.size(0) / batch, 1),
@@ -211,12 +216,13 @@ def main(argv=None) -> int:
         return 1
     print()
     rows = bench(args, graphs, device)
-    header = (f"{'batch':>6} {'nodes':>7} {'edges':>8} {'nodes/cplx':>11} {'mean/pose ms':>13} "
-              f"{'p50/pose ms':>12} {'p95/pose ms':>12} {'poses/min':>10}")
+    header = (f"{'batch':>6} {'vram GB':>8} {'nodes':>7} {'edges':>8} {'nodes/cplx':>11} "
+              f"{'mean/pose ms':>13} {'p50/pose ms':>12} {'p95/pose ms':>12} {'poses/min':>10}")
     print(header)
     print("-" * len(header))
     for r in rows:
-        print(f"{r['batch']:>6} {r['nodes']:>7} {r['edges']:>8} {r['nodes_per_complex']:>11} "
+        print(f"{r['batch']:>6} {r['vram_peak_gb']:>8} {r['nodes']:>7} {r['edges']:>8} "
+              f"{r['nodes_per_complex']:>11} "
               f"{r['per_pose_mean_ms']:>13} {r['per_pose_p50_ms']:>12} {r['per_pose_p95_ms']:>12} "
               f"{r['poses_per_min']:>10}")
     if args.csv:
