@@ -72,6 +72,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional timestep power-respacing override",
     )
+    parser.add_argument(
+        "--snr-consistent",
+        action="store_true",
+        default=None,
+        help="Override: use exact SNR-preserving schedule math and ancestral posterior sampler",
+    )
+    parser.add_argument(
+        "--snr-mode",
+        choices=("off", "train", "sampler", "full"),
+        default=None,
+        help="Override SNR mode for resampling",
+    )
+    parser.add_argument(
+        "--skip-pose-artifacts",
+        action="store_true",
+        help="Skip writing sample, trajectory, and ligand-only pose artifacts",
+    )
+    parser.add_argument(
+        "--skip-plot",
+        action="store_true",
+        help="Skip writing the optional plot artifact",
+    )
     train_defaults = build_train_parser().parse_args([])
     for name in PATH_OVERRIDE_NAMES:
         default_value = getattr(train_defaults, name)
@@ -101,6 +123,10 @@ def _apply_overrides(args: argparse.Namespace, cli_args: argparse.Namespace) -> 
         args.sample_time_power = cli_args.sample_time_power
     if cli_args.device is not None:
         args.device = cli_args.device
+    if cli_args.skip_pose_artifacts:
+        args.skip_pose_artifacts = True
+    if cli_args.skip_plot:
+        args.skip_plot = True
     for name in PATH_OVERRIDE_NAMES:
         setattr(args, name, getattr(cli_args, name))
 
@@ -108,25 +134,42 @@ def _apply_overrides(args: argparse.Namespace, cli_args: argparse.Namespace) -> 
 def _load_sampling_graph(
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, str]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, str, float | None, int | None]:
     if dataset_mode_enabled(args):
         examples = build_dataset_examples(args)
         sample_example = dataset_example_for_step(examples, args.steps)
-        node_features, positions, edge_index, ligand_bond_index = load_dataset_example(
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_dataset_example(
             sample_example,
             args,
             device,
         )
-        return node_features, positions, edge_index, ligand_bond_index, sample_example.complex_id
-    node_features, positions, edge_index, ligand_bond_index = load_graph_inputs(args, device)
+        return (
+            node_features,
+            positions,
+            edge_index,
+            ligand_bond_index,
+            sample_example.complex_id,
+            resolved_crop_cutoff,
+            retained_protein_nodes,
+        )
+    node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_graph_inputs(args, device)
     complex_id = None
     if args.protein_path is not None:
         complex_id = args.protein_path.name.replace("_protein.pdb", "")
-    return node_features, positions, edge_index, ligand_bond_index, complex_id or "synthetic"
+    return (
+        node_features,
+        positions,
+        edge_index,
+        ligand_bond_index,
+        complex_id or "synthetic",
+        resolved_crop_cutoff,
+        retained_protein_nodes,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     cli_args = build_parser().parse_args(argv)
+    command_argv = sys.argv[1:] if argv is None else argv
     device_name = cli_args.device or "cpu"
     device = resolve_device(device_name)
     saved_args = _load_checkpoint_saved_args(cli_args.checkpoint, device)
@@ -139,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--sample-time-power must be positive.")
 
     torch.manual_seed(int(args.seed))
-    node_features, positions, edge_index, _ligand_bond_index, complex_id = _load_sampling_graph(args, device)
+    node_features, positions, edge_index, _ligand_bond_index, complex_id, resolved_crop_cutoff, retained_protein_nodes = _load_sampling_graph(args, device)
     model = make_model_for_node_dim(args, device, node_dim=node_features.size(-1))
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     checkpoint_state = load_checkpoint(
@@ -164,6 +207,16 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     with torch.no_grad():
+        snr_consistent = False
+        if args.snr_consistent is not None:
+            snr_consistent = bool(args.snr_consistent)
+        elif args.snr_mode is not None:
+            snr_consistent = args.snr_mode in ("sampler", "full")
+        else:
+            snr_consistent = bool(
+                getattr(saved_args, "snr_consistent", False)
+                or getattr(saved_args, "snr_mode", "off") in ("sampler", "full")
+            )
         sampled_positions, trajectory, sampler_diagnostics = sample_positions(
             model,
             node_features,
@@ -182,31 +235,42 @@ def main(argv: list[str] | None = None) -> int:
             reference_positions=positions,
             anchor_protein=args.frame_hetero_backbone,
             sampler_diagnostics=sampler_context,
+            snr_consistent=snr_consistent,
         )
-
-    write_pdb(args.output, sampled_positions)
-    write_trajectory_pdb(args.trajectory_output, trajectory)
-    print(f"sample_path={args.output}")
-    print(f"trajectory_path={args.trajectory_output}")
-    ligand_sample_path, ligand_trajectory_path = write_ligand_artifacts(
-        node_features=node_features,
-        sampled_positions=sampled_positions,
-        trajectory=trajectory,
-        ligand_output=args.ligand_output,
-        ligand_trajectory_output=args.ligand_trajectory_output,
-    )
-    if ligand_sample_path is not None:
-        print(f"ligand_sample_path={ligand_sample_path}")
-    if ligand_trajectory_path is not None:
-        print(f"ligand_trajectory_path={ligand_trajectory_path}")
+    sample_path: Path | None = None
+    trajectory_path: Path | None = None
+    if args.skip_pose_artifacts:
+        print("sample_artifacts=skipped")
+    else:
+        write_pdb(args.output, sampled_positions)
+        write_trajectory_pdb(args.trajectory_output, trajectory)
+        sample_path = args.output
+        trajectory_path = args.trajectory_output
+        print(f"sample_path={args.output}")
+        print(f"trajectory_path={args.trajectory_output}")
+        ligand_sample_path, ligand_trajectory_path = write_ligand_artifacts(
+            node_features=node_features,
+            sampled_positions=sampled_positions,
+            trajectory=trajectory,
+            ligand_output=args.ligand_output,
+            ligand_trajectory_output=args.ligand_trajectory_output,
+        )
+        if ligand_sample_path is not None:
+            print(f"ligand_sample_path={ligand_sample_path}")
+        if ligand_trajectory_path is not None:
+            print(f"ligand_trajectory_path={ligand_trajectory_path}")
 
     write_loss_csv(args.loss_csv, checkpoint_state.loss_rows)
     print(f"loss_csv={args.loss_csv}")
-    plot_written = maybe_write_plot(args.plot_output, trajectory, checkpoint_state.loss_rows)
-    if plot_written:
-        print(f"plot_path={args.plot_output}")
+    plot_written = False
+    if args.skip_plot:
+        print("plot_path=skipped")
     else:
-        print("plot_path=not_written (matplotlib not available)")
+        plot_written = maybe_write_plot(args.plot_output, trajectory, checkpoint_state.loss_rows)
+        if plot_written:
+            print(f"plot_path={args.plot_output}")
+        else:
+            print("plot_path=not_written (matplotlib not available)")
 
     extra_metrics: dict[str, float] = {}
     ligand_mask = node_features[:, -1] > 0.5
@@ -226,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.experiment_log is not None:
         write_experiment_log(
             args.experiment_log,
-            command=f"uv run python -m equidock_diff.resample_from_checkpoint {shlex.join(sys.argv[1:])}",
+            command=f"uv run python -m equidock_diff.resample_from_checkpoint {shlex.join(command_argv)}",
             device=device,
             graph_source="dataset" if dataset_mode_enabled(args) else ("real_pair" if args.protein_path else "synthetic"),
             args=args,
@@ -234,11 +298,13 @@ def main(argv: list[str] | None = None) -> int:
             training_seconds=checkpoint_state.training_seconds,
             node_count=positions.size(0),
             edge_count=edge_index.size(1),
-            sample_path=args.output,
-            trajectory_path=args.trajectory_output,
+            sample_path=sample_path,
+            trajectory_path=trajectory_path,
             loss_csv_path=args.loss_csv,
             plot_path=args.plot_output if plot_written else None,
             extra_metrics=extra_metrics or None,
+            resolved_crop_cutoff=resolved_crop_cutoff,
+            retained_protein_nodes=retained_protein_nodes,
         )
         print(f"experiment_log={args.experiment_log}")
 

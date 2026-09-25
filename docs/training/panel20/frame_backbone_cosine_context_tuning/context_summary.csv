@@ -1,0 +1,4 @@
+candidate,context_policy,crop_cutoff,mean_raw_rmse,mean_aligned_rmsd,aligned_delta_vs_fixed8,raw_delta_vs_fixed8,improved_complexes,hard_case_gate_pass
+fixed_8,fixed,8.0,1.319712,1.002507,0.000000,0.000000,0,no
+fixed_10,fixed,10.0,1.295312,0.962506,-0.040001,-0.024401,6,no
+adaptive,adaptive,adaptive,1.203613,0.930441,-0.072066,-0.116099,6,no

@@ -69,3 +69,77 @@ uv run python -m equidock_diff.train --device cpu --steps 20 --sample-steps 10
 The quick-start training command above uses the synthetic path. Real-complex runs and dataset mode require the dataset setup above.
 
 Tracked evaluation summaries are kept under `docs/training/panel20/`, with representative qualitative figures in `docs/training/showcase/`.
+
+## Fast Research Iteration
+
+For small exploratory matrices, use the local research runner instead of hand-writing many `train` and `resample_from_checkpoint` commands:
+
+```bash
+uv run python -m equidock_diff.research_runner \
+  --complex-id 10gs \
+  --model frame_backbone \
+  --noise-schedule cosine \
+  --seed 42 \
+  --steps 200 \
+  --sample-steps 25 \
+  --sample-steps 50 \
+  --tag quick_cosine_probe
+```
+
+Research-run behavior:
+
+- scratch runs default to auto-detected `mps` when available and fall back to `cpu`
+- canonical/report-quality runs should still use CPU-oriented workflows outside the runner
+- local outputs go under `runs/research/<tag>/` and are not committed
+- inference-only variants reuse checkpoints through `equidock_diff.resample_from_checkpoint`
+- pose, trajectory, and plot artifacts are skipped by default; add `--save-artifacts` when you need them
+
+Use `--dry-run` to inspect the expanded run matrix before spending compute, and `--compare-against <prior-tag>` to generate a diff against an earlier local research tag.
+
+For scratch runs on a separate machine, use the remote wrapper from the laptop and let the Mac mini host the actual research run:
+
+```bash
+uv run python -m equidock_diff.remote_research_runner \
+  --remote-host mini.tailnet.ts.net \
+  --remote-repo /Users/sadik/Projects/equidock-diff \
+  --remote-dataset-target /absolute/path/to/pdbbind_v2020 \
+  --complex-id 10gs \
+  --model frame_backbone \
+  --noise-schedule cosine \
+  --tag mini_probe \
+  --dry-run
+```
+
+For mixed scheduling across both machines, use the dual-host coordinator. It assigns per-training-signature groups to the laptop or the Mac mini and writes a combined plan/status surface under `runs/dual/<tag>/`:
+
+```bash
+uv run python -m equidock_diff.dual_host_runner \
+  --complex-id 13gs \
+  --complex-id 16pk \
+  --complex-id 184l \
+  --complex-id 186l \
+  --model frame_backbone \
+  --noise-schedule cosine \
+  --steps 200 \
+  --dual-tag mixed_probe \
+  --routing-policy explicit \
+  --local-complex-id 13gs \
+  --local-complex-id 16pk \
+  --remote-complex-id 184l \
+  --remote-complex-id 186l \
+  --remote-host macmini-tailscale \
+  --remote-repo /Users/sadik/Projects/equidock-diff \
+  --remote-dataset-target /Users/sadik/data/pdbbind_v2020 \
+  --dry-run
+```
+
+Remote-workflow policy:
+
+- scratch research should run on the Mac mini over Tailscale SSH when possible
+- the Mac mini should use a dedicated clone of this repo
+- the remote dataset should be exposed through `data/pdbbind_v2020` inside that clone
+- fetched summaries are written locally under `runs/remote/<tag>/` and are not committed
+- mixed dual-host orchestration summaries are written under `runs/dual/<tag>/` and are not committed
+- canonical panel evidence remains CPU-based and curated under `docs/training/`
+
+Muon is intentionally deferred until there is a materially different architecture to test; current near-term work should focus on architecture, loss design, and data/context handling.

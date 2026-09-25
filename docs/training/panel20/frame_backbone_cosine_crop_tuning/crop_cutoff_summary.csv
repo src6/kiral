@@ -1,0 +1,4 @@
+crop_cutoff,mean_raw_ligand_rmse,mean_aligned_ligand_rmsd,mean_training_seconds
+6.0,1.350086,0.952654,2.524
+8.0,1.314866,0.980977,4.674
+10.0,1.325092,0.957343,8.541

@@ -18,6 +18,8 @@ class _Args:
     protein_path = None
     ligand_path = None
     crop_cutoff = 10.0
+    context_policy = "fixed"
+    protein_node_budget = 256
     edge_cutoff = 4.5
     hidden_dim = 32
     num_layers = 2
@@ -25,9 +27,13 @@ class _Args:
     complete_frame = False
     hetero_edges = False
     frame_hetero_backbone = False
+    use_edge_attention = False
+    use_cross_interface_block = False
     learning_rate = 1e-3
     ligand_bond_weight = 0.0
     ligand_shape_weight = 0.0
+    ligand_protein_clash_weight = 0.0
+    ligand_protein_contact_weight = 0.0
     beta_min = 0.1
     beta_max = 2.0
     noise_schedule = "linear"

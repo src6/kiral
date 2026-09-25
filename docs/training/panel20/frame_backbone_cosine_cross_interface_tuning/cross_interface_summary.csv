@@ -1,0 +1,3 @@
+candidate,context_policy,use_cross_interface_block,mean_raw_rmse,mean_aligned_rmsd,aligned_delta_vs_adaptive,raw_delta_vs_adaptive,improved_complexes,hard_case_gate_pass
+adaptive_control,adaptive,false,1.203613,0.930441,0.000000,0.000000,control,control
+adaptive_cross_interface,adaptive,true,1.407141,1.014673,0.084232,0.203528,3,no

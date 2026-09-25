@@ -1,0 +1,5 @@
+clash_weight,mean_raw_ligand_rmse,mean_aligned_ligand_rmsd,mean_training_seconds
+0.00,1.294509,0.958256,6.237
+0.01,1.297632,0.962931,6.269
+0.02,1.294660,0.959002,6.272
+0.05,1.291970,0.956771,6.262

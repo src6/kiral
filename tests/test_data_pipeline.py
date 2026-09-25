@@ -6,13 +6,17 @@ import pytest
 import torch
 
 from equidock_diff.data.pipeline import (
+    GraphBatch,
+    gate_protein_nodes,
     build_complete_edge_index,
     build_graph_batch,
     build_radius_edge_index,
     graph_cache_path,
+    ligand_max_span,
     load_protein_graph,
     load_protein_ligand_graph,
     load_protein_ligand_graph_cached,
+    resolve_context_crop_cutoff,
 )
 from equidock_diff.data.io import (
     ProteinLigandPaths,
@@ -180,6 +184,125 @@ def test_load_protein_ligand_graph_from_files(tmp_path: Path) -> None:
     assert batch.ligand_bond_index is not None
     assert batch.ligand_bond_index.shape[0] == 2
     assert torch.all(batch.ligand_bond_index < ligand_count)
+    assert batch.resolved_crop_cutoff == pytest.approx(10.0)
+
+
+def test_resolve_context_crop_cutoff_is_clamped() -> None:
+    compact = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32)
+    wide = torch.tensor([[0.0, 0.0, 0.0], [20.0, 0.0, 0.0]], dtype=torch.float32)
+
+    assert ligand_max_span(compact) == pytest.approx(0.0)
+    assert resolve_context_crop_cutoff(compact, context_policy="adaptive", cutoff=8.0) == pytest.approx(6.0)
+    assert resolve_context_crop_cutoff(wide, context_policy="adaptive", cutoff=8.0) == pytest.approx(10.0)
+    assert resolve_context_crop_cutoff(wide, context_policy="fixed", cutoff=8.0) == pytest.approx(8.0)
+
+
+def test_load_protein_ligand_graph_adaptive_context_records_resolved_cutoff(tmp_path: Path) -> None:
+    pdb_path, ligand_path = _write_test_pair(tmp_path)
+
+    batch = load_protein_ligand_graph(
+        pdb_path,
+        ligand_path,
+        cutoff=8.0,
+        edge_cutoff=4.5,
+        context_policy="adaptive",
+    )
+
+    assert batch.resolved_crop_cutoff is not None
+    assert 6.0 <= batch.resolved_crop_cutoff <= 10.0
+
+
+def test_gate_protein_nodes_keeps_all_ligand_nodes_and_honors_budget() -> None:
+    positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 2.0, 0.0],
+            [0.5, 3.0, 0.0],
+            [0.5, 7.0, 0.0],
+            [0.5, 8.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    ligand_mask = torch.tensor([True, True, False, False, False, False])
+    crop_mask = torch.tensor([True, True, True, True, True, True])
+
+    gated_mask, retained = gate_protein_nodes(
+        positions,
+        ligand_mask,
+        crop_mask,
+        protein_node_budget=2,
+    )
+
+    assert torch.equal(gated_mask[:2], torch.tensor([True, True]))
+    assert retained == 2
+    assert int((gated_mask & ~ligand_mask).sum().item()) == 2
+    assert gated_mask.tolist() == [True, True, True, True, False, False]
+
+
+def test_gate_protein_nodes_is_deterministic_and_keeps_all_when_under_budget() -> None:
+    positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 2.0, 0.0],
+            [0.5, 2.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    ligand_mask = torch.tensor([True, True, False, False])
+    crop_mask = torch.tensor([True, True, True, True])
+
+    first_mask, first_retained = gate_protein_nodes(
+        positions,
+        ligand_mask,
+        crop_mask,
+        protein_node_budget=4,
+    )
+    second_mask, second_retained = gate_protein_nodes(
+        positions,
+        ligand_mask,
+        crop_mask,
+        protein_node_budget=4,
+    )
+
+    assert torch.equal(first_mask, second_mask)
+    assert first_retained == second_retained == 2
+
+
+def test_build_graph_batch_gated_remaps_edges_and_records_retained_protein_nodes() -> None:
+    node_features = torch.zeros(6, 16, dtype=torch.float32)
+    positions = torch.tensor(
+        [
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 3.0, 0.0],
+            [0.0, 7.0, 0.0],
+            [0.0, 8.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    ligand_mask = torch.tensor([True, True, False, False, False, False])
+    ligand_bond_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
+    edge_index = build_complete_edge_index(6, device=torch.device("cpu"))
+
+    batch = build_graph_batch(
+        node_features,
+        positions,
+        edge_index,
+        ligand_mask,
+        ligand_bond_index=ligand_bond_index,
+        cutoff=10.0,
+        context_policy="gated",
+        protein_node_budget=2,
+    )
+
+    assert batch.node_features.shape[0] == 4
+    assert batch.retained_protein_nodes == 2
+    assert batch.ligand_bond_index is not None
+    assert torch.all(batch.ligand_bond_index < 2)
+    assert int((batch.node_features[:, -1] <= 0.5).sum().item()) == 2
 
 
 def test_load_split_complex_ids_ignores_comments_and_blank_lines(tmp_path: Path) -> None:
@@ -294,3 +417,55 @@ def test_load_protein_ligand_graph_cached_invalidates_when_input_changes(tmp_pat
 
     assert len(list(cache_dir.glob("*.pt"))) == 2
     assert not torch.allclose(original_batch.positions, updated_batch.positions)
+
+
+def test_load_protein_ligand_graph_cached_backfills_missing_resolved_cutoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdb_path, ligand_path = _write_test_pair(tmp_path)
+    cache_dir = tmp_path / "graph_cache"
+
+    adaptive_cutoff = resolve_context_crop_cutoff(
+        load_protein_ligand_graph(
+            pdb_path,
+            ligand_path,
+            cutoff=8.0,
+            edge_cutoff=4.5,
+            context_policy="adaptive",
+        ).positions[:3],
+        context_policy="adaptive",
+        cutoff=8.0,
+    )
+    cache_path = graph_cache_path(
+        cache_dir,
+        pdb_path,
+        ligand_path,
+        cutoff=adaptive_cutoff,
+        edge_cutoff=4.5,
+    )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(b"stub")
+
+    monkeypatch.setattr(
+        "equidock_diff.data.pipeline.load_graph_batch_cache",
+        lambda _path: GraphBatch(
+            node_features=torch.zeros((2, 17), dtype=torch.float32),
+            positions=torch.zeros((2, 3), dtype=torch.float32),
+            edge_index=torch.zeros((2, 0), dtype=torch.long),
+            crop_mask=torch.ones(2, dtype=torch.bool),
+            ligand_bond_index=torch.zeros((2, 0), dtype=torch.long),
+            resolved_crop_cutoff=None,
+        ),
+    )
+
+    graph = load_protein_ligand_graph_cached(
+        pdb_path,
+        ligand_path,
+        cutoff=8.0,
+        edge_cutoff=4.5,
+        cache_dir=cache_dir,
+        context_policy="adaptive",
+    )
+
+    assert graph.resolved_crop_cutoff == pytest.approx(adaptive_cutoff)
