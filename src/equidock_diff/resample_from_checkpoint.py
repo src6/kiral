@@ -73,6 +73,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional timestep power-respacing override",
     )
     parser.add_argument(
+        "--snr-consistent",
+        action="store_true",
+        default=None,
+        help="Override: use exact SNR-preserving schedule math and ancestral posterior sampler",
+    )
+    parser.add_argument(
+        "--snr-mode",
+        choices=("off", "train", "sampler", "full"),
+        default=None,
+        help="Override SNR mode for resampling",
+    )
+    parser.add_argument(
         "--skip-pose-artifacts",
         action="store_true",
         help="Skip writing sample, trajectory, and ligand-only pose artifacts",
@@ -195,6 +207,16 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     with torch.no_grad():
+        snr_consistent = False
+        if args.snr_consistent is not None:
+            snr_consistent = bool(args.snr_consistent)
+        elif args.snr_mode is not None:
+            snr_consistent = args.snr_mode in ("sampler", "full")
+        else:
+            snr_consistent = bool(
+                getattr(saved_args, "snr_consistent", False)
+                or getattr(saved_args, "snr_mode", "off") in ("sampler", "full")
+            )
         sampled_positions, trajectory, sampler_diagnostics = sample_positions(
             model,
             node_features,
@@ -213,8 +235,8 @@ def main(argv: list[str] | None = None) -> int:
             reference_positions=positions,
             anchor_protein=args.frame_hetero_backbone,
             sampler_diagnostics=sampler_context,
+            snr_consistent=snr_consistent,
         )
-
     sample_path: Path | None = None
     trajectory_path: Path | None = None
     if args.skip_pose_artifacts:
