@@ -70,7 +70,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--manifest", type=Path, default=None, help="Complex ids, one per line")
     p.add_argument("--limit", type=int, default=None, help="Sample only the first N complexes")
     p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--sample-steps", type=int, default=25)
+    p.add_argument(
+        "--sample-steps",
+        type=int,
+        default=12,
+        help="Reverse diffusion steps. 12 and 25 measured indistinguishable on the panel "
+             "(mean aligned RMSD 0.484 vs 0.486 A over 20 complexes), 6 damages the tail "
+             "(worst 2.15 A, 19/20 within 2 A), so 12 is the default operating point.",
+    )
     p.add_argument("--schedule", default="cosine", choices=("linear", "cosine"))
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="auto")
