@@ -1,7 +1,8 @@
 [project]
-name = "equidock-diff"
+name = "kiral"
 version = "0.2.0"
-description = "Kiral: High-throughput SE(3)-equivariant molecular docking engine"
+description = "Chirality-aware SE(3)-equivariant protein–ligand docking with VP-SDE diffusion"
+license = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
