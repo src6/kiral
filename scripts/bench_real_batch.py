@@ -93,7 +93,7 @@ def model_args(args: argparse.Namespace) -> SimpleNamespace:
     )
 
 
-def load_real_graphs(args, device) -> list[dict]:
+def load_real_graphs(args) -> list[dict]:
     paths = load_paths(args.root)
     by_id = {p.complex_id: p for p in paths}
     ids = [
@@ -109,8 +109,10 @@ def load_real_graphs(args, device) -> list[dict]:
         if example is None:
             print(f"  skip {cid}: not in the dataset", flush=True)
             continue
+        # keep the cached manifest on CPU: only the tested subset is moved to the accelerator,
+        # so the reported peak is the batch's occupancy rather than the whole manifest's residency
         features, positions, edge_index, _bond, _cutoff, _retained = load_dataset_example(
-            example, pipeline_args(args), device
+            example, pipeline_args(args), torch.device("cpu")
         )
         graphs.append(
             {
@@ -145,7 +147,8 @@ def bench(args, graphs, device) -> list[dict]:
         subset = graphs[:batch]
         features, positions, edge_index, _ = stack(subset, device)
         if device.type == "cuda":
-            torch.cuda.reset_peak_memory_stats()
+            # reset_peak_memory_stats() defaults to the current device, which is wrong for cuda:1
+            torch.cuda.reset_peak_memory_stats(device)
         torch.manual_seed(args.seed)
         model = make_model_for_node_dim(model_args(args), device, node_dim=features.size(-1))
         model = model.to(device).eval()
@@ -180,7 +183,7 @@ def bench(args, graphs, device) -> list[dict]:
         rows.append(
             {
                 "batch": batch,
-                "vram_peak_gb": round(torch.cuda.max_memory_allocated() / 1e9, 3)
+                "vram_peak_gb": round(torch.cuda.max_memory_allocated(device) / 1e9, 3)
                 if device.type == "cuda"
                 else 0.0,
                 "nodes": int(features.size(0)),
@@ -210,7 +213,7 @@ def main(argv=None) -> int:
           + (f" | {torch.cuda.get_device_name(device)}" if device.type == "cuda" else ""))
     print(f"sample-steps {args.sample_steps} | schedule {args.schedule} | amp {args.amp} | compile {args.compile}")
     print("loading complexes through the repo pipeline:")
-    graphs = load_real_graphs(args, device)
+    graphs = load_real_graphs(args)
     if not graphs:
         print("no complexes loaded")
         return 1
