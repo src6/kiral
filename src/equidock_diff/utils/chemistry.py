@@ -538,7 +538,14 @@ def evaluate_chemical_validity(
     clash_ratio_threshold: float = 0.75,
     clash_margin: float = 0.2,
 ) -> ChemicalHealthReport:
-    """Produce unified PoseBusters-style chemical validity report."""
+    """Approximate in-loop chemical diagnostics.
+
+    This is *not* a validity verdict: measured 2026-09-25 it reported every crystal pose on
+    the dissertation panel as invalid, because hydrogens carry a carbon radius and the clash
+    threshold takes the stricter of two bounds. Use ``equidock_diff.pose_validity`` (the
+    reference PoseBusters implementation, exposed as ``kiral validate``) for validity, and
+    this for cheap per-step signals.
+    """
     is_ligand = node_features[:, -1] > 0.5
     ligand_atoms = int(is_ligand.sum().item())
     protein_atoms = int((~is_ligand).sum().item())
