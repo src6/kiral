@@ -696,17 +696,27 @@ def save_checkpoint(
     torch.save(checkpoint, path)
 
 
+def load_checkpoint_payload(path: Path, device: torch.device) -> dict:
+    """Deserialize a checkpoint once.
+
+    Callers that need ``saved_args`` before a model can exist would otherwise read and
+    deserialize the same file twice.
+    """
+    try:
+        return torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=device)
+
+
 def load_checkpoint(
     path: Path,
     *,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    payload: dict | None = None,
 ) -> CheckpointState:
-    try:
-        checkpoint = torch.load(path, map_location=device, weights_only=False)
-    except TypeError:
-        checkpoint = torch.load(path, map_location=device)
+    checkpoint = load_checkpoint_payload(path, device) if payload is None else payload
 
     model.load_state_dict(checkpoint["model_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
