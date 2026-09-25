@@ -114,7 +114,7 @@ RESUME_COMPAT_KEYS = (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Equidock-Diff training entry point")
-    parser.add_argument("--device", default="mps", help="Device: mps or cpu")
+    parser.add_argument("--device", default="mps", help="Device: cuda, mps, cpu, or auto")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--dry-run", action="store_true", help="Validate setup only")
     parser.add_argument("--steps", type=int, default=100, help="Training steps")
@@ -375,7 +375,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def resolve_device(device_name: str) -> torch.device:
-    if device_name == "mps" and torch.backends.mps.is_available():
+    normalized = device_name.lower().strip()
+    if normalized == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    if normalized.startswith("cuda"):
+        if torch.cuda.is_available():
+            return torch.device(normalized)
+        return torch.device("cpu")
+    if normalized == "mps" and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
 
