@@ -19,12 +19,15 @@ from equidock_diff.data.pipeline import load_protein_ligand_graph, load_protein_
 from equidock_diff.diffusion.schedules import (
     DEFAULT_COSINE_NU,
     DEFAULT_COSINE_OFFSET,
+    alpha_bar_for_schedule,
     beta_schedule_value,
     cosine_signal_amplitude,
+    step_beta_from_alpha,
 )
 from equidock_diff.diffusion.sde import SDEStep, forward_step, reverse_step
 from equidock_diff.models.egnn import EGNNConfig, infer_ligand_mask
 from equidock_diff.models.score_net import ScoreNet, ScoreNetConfig
+from equidock_diff.models.amp_utils import get_autocast_context, maybe_compile_model
 from equidock_diff.utils.artifacts import (
     write_experiment_log,
     write_ligand_artifacts,
@@ -32,6 +35,7 @@ from equidock_diff.utils.artifacts import (
     write_pdb,
     write_trajectory_pdb,
 )
+from equidock_diff.utils.chemistry import ATOM_CLASH_RADII, ATOM_SYMBOLS
 from equidock_diff.utils.geometry import aligned_rmsd, random_rotation_matrix
 from equidock_diff.utils.plotting import maybe_write_plot
 
@@ -81,16 +85,26 @@ RESUME_COMPAT_KEYS = (
     "ligand_global_node",
     "complete_frame",
     "frame_hetero_backbone",
+    "use_edge_attention",
+    "use_cross_interface_block",
     "learning_rate",
     "ligand_bond_weight",
     "ligand_shape_weight",
+    "ligand_protein_clash_weight",
+    "ligand_protein_contact_weight",
     "beta_min",
     "beta_max",
     "noise_schedule",
+    "snr_consistent",
+    "snr_mode",
+    "amp",
+    "compile",
     "cosine_offset",
     "cosine_nu",
     "protein_path",
     "ligand_path",
+    "context_policy",
+    "protein_node_budget",
     "crop_cutoff",
     "edge_cutoff",
     "batch_size",
@@ -103,7 +117,7 @@ RESUME_COMPAT_KEYS = (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Equidock-Diff training entry point")
-    parser.add_argument("--device", default="mps", help="Device: mps or cpu")
+    parser.add_argument("--device", default="mps", help="Device: cuda, mps, cpu, or auto")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--dry-run", action="store_true", help="Validate setup only")
     parser.add_argument("--steps", type=int, default=100, help="Training steps")
@@ -126,6 +140,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=10.0,
         help="Protein crop cutoff in Angstrom for the real-pair path",
+    )
+    parser.add_argument(
+        "--context-policy",
+        choices=("fixed", "adaptive", "gated"),
+        default="fixed",
+        help="How to select protein context for the real-pair path",
+    )
+    parser.add_argument(
+        "--protein-node-budget",
+        type=int,
+        default=256,
+        help="Maximum retained protein nodes when --context-policy gated is used",
     )
     parser.add_argument(
         "--edge-cutoff",
@@ -156,6 +182,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the heterogeneous frame-based backbone with local orientation features",
     )
     parser.add_argument(
+        "--use-edge-attention",
+        action="store_true",
+        help="Enable lightweight incoming-edge attention inside the frame-backbone EGNN layers",
+    )
+    parser.add_argument(
+        "--use-cross-interface-block",
+        action="store_true",
+        help="Enable a ligand-only protein-to-ligand cross-message block inside the frame-backbone EGNN layers",
+    )
+    parser.add_argument(
         "--hetgnn-backbone",
         dest="frame_hetero_backbone",
         action="store_true",
@@ -174,6 +210,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Optional weight for ligand local shape preservation",
     )
+    parser.add_argument(
+        "--ligand-protein-clash-weight",
+        type=float,
+        default=0.0,
+        help="Optional weight for ligand-protein soft clash avoidance",
+    )
+    parser.add_argument(
+        "--ligand-protein-contact-weight",
+        type=float,
+        default=0.0,
+        help="Optional weight for ligand-protein soft contact-window preference",
+    )
     parser.add_argument("--beta-min", type=float, default=0.1, help="VP-SDE beta minimum")
     parser.add_argument("--beta-max", type=float, default=2.0, help="VP-SDE beta maximum")
     parser.add_argument(
@@ -181,6 +229,29 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("linear", "cosine"),
         default="linear",
         help="Noise schedule for training and sampling",
+    )
+    parser.add_argument(
+        "--snr-consistent",
+        action="store_true",
+        help="Use exact SNR-preserving schedule math: forward noising via ᾱ(t) and "
+        "reverse steps via exact ancestral posterior sampling (report-consistent conventions)",
+    )
+    parser.add_argument(
+        "--snr-mode",
+        choices=("off", "train", "sampler", "full"),
+        default="off",
+        help="Apply the SNR-consistent correction to training noising only (train), "
+        "the ancestral sampler only (sampler), or both (full)",
+    )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable automatic mixed precision (BF16 on CUDA / CPU)",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Enable PyTorch 2.x model compilation (torch.compile)",
     )
     parser.add_argument(
         "--cosine-offset",
@@ -250,6 +321,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for the optional trajectory plot image",
     )
     parser.add_argument(
+        "--skip-pose-artifacts",
+        action="store_true",
+        help="Skip writing sample, trajectory, and ligand-only pose artifacts",
+    )
+    parser.add_argument(
+        "--skip-plot",
+        action="store_true",
+        help="Skip writing the optional plot artifact",
+    )
+    parser.add_argument(
         "--experiment-log",
         type=Path,
         default=None,
@@ -301,13 +382,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset-cache-dir",
         type=Path,
         default=Path("data/.cache/equidock_diff_graphs"),
-        help="Directory for cached dataset graphs; used only in dataset mode",
+        help="Directory for cached protein-ligand graphs in dataset and single-pair modes",
     )
     return parser
 
 
 def resolve_device(device_name: str) -> torch.device:
-    if device_name == "mps" and torch.backends.mps.is_available():
+    normalized = device_name.lower().strip()
+    if normalized == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    if normalized.startswith("cuda"):
+        if torch.cuda.is_available():
+            return torch.device(normalized)
+        return torch.device("cpu")
+    if normalized == "mps" and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
 
@@ -372,6 +464,8 @@ def make_model_for_node_dim(
                 use_ligand_global_node=args.ligand_global_node,
                 use_complete_frame=args.complete_frame,
                 use_frame_hetero_backbone=args.frame_hetero_backbone,
+                use_edge_attention=args.use_edge_attention,
+                use_cross_interface_block=args.use_cross_interface_block,
             )
         )
     )
@@ -381,7 +475,7 @@ def make_model_for_node_dim(
 def load_graph_inputs(
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, float | None, int | None]:
     if dataset_mode_enabled(args):
         raise ValueError("load_graph_inputs does not support dataset mode.")
 
@@ -391,21 +485,26 @@ def load_graph_inputs(
         raise ValueError("Pass both --protein-path and --ligand-path to use the real-pair path.")
 
     if has_protein and has_ligand:
-        batch = load_protein_ligand_graph(
+        batch = load_protein_ligand_graph_cached(
             args.protein_path,
             args.ligand_path,
             cutoff=args.crop_cutoff,
             edge_cutoff=getattr(args, "edge_cutoff", 4.5),
+            cache_dir=getattr(args, "dataset_cache_dir", None),
+            context_policy=getattr(args, "context_policy", "fixed"),
+            protein_node_budget=getattr(args, "protein_node_budget", 256),
         )
         return (
             batch.node_features.to(device),
             batch.positions.to(device),
             batch.edge_index.to(device),
             None if batch.ligand_bond_index is None else batch.ligand_bond_index.to(device),
+            batch.resolved_crop_cutoff,
+            batch.retained_protein_nodes,
         )
 
     node_features, positions, edge_index = build_synthetic_graph(args.num_nodes, args.batch_size, device)
-    return node_features, positions, edge_index, None
+    return node_features, positions, edge_index, None, None, None
 
 
 def _checkpoint_arg_value(value: object) -> object:
@@ -480,19 +579,23 @@ def load_dataset_example(
     example: ProteinLigandPaths,
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, float | None, int | None]:
     batch = load_protein_ligand_graph_cached(
         example.protein_path,
         example.ligand_path,
         cutoff=args.crop_cutoff,
         edge_cutoff=args.edge_cutoff,
         cache_dir=args.dataset_cache_dir,
+        context_policy=args.context_policy,
+        protein_node_budget=args.protein_node_budget,
     )
     return (
         batch.node_features.to(device),
         batch.positions.to(device),
         batch.edge_index.to(device),
         None if batch.ligand_bond_index is None else batch.ligand_bond_index.to(device),
+        batch.resolved_crop_cutoff,
+        batch.retained_protein_nodes,
     )
 
 
@@ -522,6 +625,7 @@ def noised_positions_for_schedule(
     noise_schedule: str,
     cosine_offset: float,
     cosine_nu: float,
+    snr_consistent: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     beta_t = beta_schedule_value(
         t,
@@ -531,6 +635,22 @@ def noised_positions_for_schedule(
         cosine_offset=cosine_offset,
         cosine_nu=cosine_nu,
     )
+    if snr_consistent:
+        alpha_t = alpha_bar_for_schedule(
+            t,
+            beta_min,
+            beta_max,
+            noise_schedule=noise_schedule,
+            cosine_offset=cosine_offset,
+            cosine_nu=cosine_nu,
+        )
+        std_t = torch.sqrt(torch.clamp_min(1.0 - alpha_t, 1e-8))
+        noised_positions = (
+            _expand_schedule_value(torch.sqrt(alpha_t), clean_positions) * clean_positions
+            + _expand_schedule_value(std_t, clean_positions) * torch.randn_like(clean_positions)
+        )
+        return noised_positions, beta_t
+
     if noise_schedule == "cosine":
         alpha_bar_t = cosine_signal_amplitude(t, offset=cosine_offset, nu=cosine_nu)
         signal_scale = torch.sqrt(torch.clamp(alpha_bar_t, min=0.0, max=1.0))
@@ -658,13 +778,14 @@ def training_step(
     noise_schedule: str = "linear",
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
+    snr_consistent: bool = False,
 ) -> tuple[torch.Tensor, float]:
     frame_hetero_backbone = False
     model_config = getattr(model, "config", None)
     egnn_config = getattr(model_config, "egnn", None)
     if egnn_config is not None:
         frame_hetero_backbone = bool(getattr(egnn_config, "use_frame_hetero_backbone", False))
-    loss, beta_t, _, _, _ = training_step_with_breakdown(
+    loss, beta_t, _, _, _, _, _ = training_step_with_breakdown(
         model,
         node_features,
         clean_positions,
@@ -674,10 +795,13 @@ def training_step(
         beta_max,
         ligand_bond_weight=0.0,
         ligand_shape_weight=0.0,
+        ligand_protein_clash_weight=0.0,
+        ligand_protein_contact_weight=0.0,
         frame_hetero_backbone=frame_hetero_backbone,
         noise_schedule=noise_schedule,
         cosine_offset=cosine_offset,
         cosine_nu=cosine_nu,
+        snr_consistent=snr_consistent,
     )
     return loss, beta_t
 
@@ -729,6 +853,95 @@ def ligand_shape_loss(
     return torch.mean((predicted_dist[keep] - clean_dist[keep]) ** 2)
 
 
+_ATOM_TYPE_DIM = len(ATOM_SYMBOLS)
+_OTHER_ATOM_INDEX = _ATOM_TYPE_DIM - 1
+_ATOM_CLASH_RADIUS_VALUES = torch.tensor(
+    [ATOM_CLASH_RADII[symbol] for symbol in ATOM_SYMBOLS],
+    dtype=torch.float32,
+)
+
+
+def _node_clash_radii(
+    node_features: torch.Tensor,
+) -> torch.Tensor | None:
+    if node_features.size(-1) < _ATOM_TYPE_DIM:
+        return None
+    atom_features = node_features[:, :_ATOM_TYPE_DIM]
+    if atom_features.numel() == 0:
+        return None
+    row_sums = atom_features.sum(dim=-1)
+    is_binary = torch.all((atom_features == 0.0) | (atom_features == 1.0))
+    if not bool(is_binary and torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-6)):
+        return None
+    atom_indices = torch.argmax(atom_features, dim=-1)
+    radii = _ATOM_CLASH_RADIUS_VALUES.to(device=node_features.device, dtype=node_features.dtype)
+    return radii[atom_indices]
+
+
+def ligand_protein_clash_loss(
+    predicted_positions: torch.Tensor,
+    node_features: torch.Tensor,
+    ligand_mask: torch.Tensor | None,
+    *,
+    margin: float = 0.2,
+) -> torch.Tensor:
+    if ligand_mask is None or not bool(ligand_mask.any()):
+        return predicted_positions.new_zeros(())
+    protein_mask = ~ligand_mask
+    if not bool(protein_mask.any()):
+        return predicted_positions.new_zeros(())
+
+    radii = _node_clash_radii(node_features)
+    if radii is None:
+        return predicted_positions.new_zeros(())
+
+    ligand_positions = predicted_positions[ligand_mask]
+    protein_positions = predicted_positions[protein_mask]
+    ligand_radii = radii[ligand_mask]
+    protein_radii = radii[protein_mask]
+    if ligand_positions.numel() == 0 or protein_positions.numel() == 0:
+        return predicted_positions.new_zeros(())
+
+    distances = torch.cdist(ligand_positions, protein_positions)
+    clash_thresholds = ligand_radii.unsqueeze(1) + protein_radii.unsqueeze(0) + margin
+    violation = torch.clamp_min(clash_thresholds - distances, 0.0)
+    if not bool((violation > 0).any()):
+        return predicted_positions.new_zeros(())
+    return torch.mean(violation.square())
+
+
+def ligand_protein_contact_loss(
+    predicted_positions: torch.Tensor,
+    node_features: torch.Tensor,
+    ligand_mask: torch.Tensor | None,
+    *,
+    offset: float = 1.5,
+    tolerance: float = 0.75,
+) -> torch.Tensor:
+    if ligand_mask is None or not bool(ligand_mask.any()):
+        return predicted_positions.new_zeros(())
+    protein_mask = ~ligand_mask
+    if not bool(protein_mask.any()):
+        return predicted_positions.new_zeros(())
+
+    radii = _node_clash_radii(node_features)
+    if radii is None:
+        return predicted_positions.new_zeros(())
+
+    ligand_positions = predicted_positions[ligand_mask]
+    protein_positions = predicted_positions[protein_mask]
+    ligand_radii = radii[ligand_mask]
+    protein_radii = radii[protein_mask]
+    if ligand_positions.numel() == 0 or protein_positions.numel() == 0:
+        return predicted_positions.new_zeros(())
+
+    distances = torch.cdist(ligand_positions, protein_positions)
+    target_distances = ligand_radii.unsqueeze(1) + protein_radii.unsqueeze(0) + offset
+    normalized_error = (distances - target_distances) / tolerance
+    contact_penalty = 1.0 - torch.exp(-0.5 * normalized_error.square())
+    return torch.mean(contact_penalty)
+
+
 def training_step_with_breakdown(
     model: nn.Module,
     node_features: torch.Tensor,
@@ -740,16 +953,20 @@ def training_step_with_breakdown(
     *,
     ligand_bond_weight: float,
     ligand_shape_weight: float,
+    ligand_protein_clash_weight: float,
+    ligand_protein_contact_weight: float,
     frame_hetero_backbone: bool,
     noise_schedule: str = "linear",
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
-) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor]:
+    snr_consistent: bool = False,
+) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
         0.05, 0.95
     )
+    detected_ligand_mask = infer_ligand_mask(node_features)
     if frame_hetero_backbone:
-        ligand_mask = infer_ligand_mask(node_features)
+        ligand_mask = detected_ligand_mask
         noised_positions = clean_positions.clone()
         noised_positions[ligand_mask], beta_t = noised_positions_for_schedule(
             clean_positions[ligand_mask],
@@ -759,6 +976,7 @@ def training_step_with_breakdown(
             noise_schedule=noise_schedule,
             cosine_offset=cosine_offset,
             cosine_nu=cosine_nu,
+            snr_consistent=snr_consistent,
         )
         target_score = torch.zeros_like(clean_positions)
         target_score[ligand_mask] = clean_positions[ligand_mask] - noised_positions[ligand_mask]
@@ -772,6 +990,7 @@ def training_step_with_breakdown(
             noise_schedule=noise_schedule,
             cosine_offset=cosine_offset,
             cosine_nu=cosine_nu,
+            snr_consistent=snr_consistent,
         )
         target_score = clean_positions - noised_positions
     predicted_score = model(node_features, noised_positions, edge_index, t)
@@ -783,8 +1002,15 @@ def training_step_with_breakdown(
         score_loss = torch.mean((predicted_score - target_score) ** 2)
     bond_loss = clean_positions.new_zeros(())
     shape_loss = clean_positions.new_zeros(())
+    clash_loss = clean_positions.new_zeros(())
+    contact_loss = clean_positions.new_zeros(())
     predicted_positions = None
-    if ligand_bond_weight > 0.0 or ligand_shape_weight > 0.0:
+    if (
+        ligand_bond_weight > 0.0
+        or ligand_shape_weight > 0.0
+        or ligand_protein_clash_weight > 0.0
+        or ligand_protein_contact_weight > 0.0
+    ):
         predicted_positions = noised_positions + predicted_score
     if ligand_bond_weight > 0.0:
         assert predicted_positions is not None
@@ -800,8 +1026,36 @@ def training_step_with_breakdown(
             clean_positions,
             ligand_mask,
         )
-    total_loss = score_loss + ligand_bond_weight * bond_loss + ligand_shape_weight * shape_loss
-    return total_loss, float(beta_t.item()), score_loss, bond_loss, shape_loss
+    if ligand_protein_clash_weight > 0.0:
+        assert predicted_positions is not None
+        clash_loss = ligand_protein_clash_loss(
+            predicted_positions,
+            node_features,
+            detected_ligand_mask,
+        )
+    if ligand_protein_contact_weight > 0.0:
+        assert predicted_positions is not None
+        contact_loss = ligand_protein_contact_loss(
+            predicted_positions,
+            node_features,
+            detected_ligand_mask,
+        )
+    total_loss = (
+        score_loss
+        + ligand_bond_weight * bond_loss
+        + ligand_shape_weight * shape_loss
+        + ligand_protein_clash_weight * clash_loss
+        + ligand_protein_contact_weight * contact_loss
+    )
+    return (
+        total_loss,
+        float(beta_t.item()),
+        score_loss,
+        bond_loss,
+        shape_loss,
+        clash_loss,
+        contact_loss,
+    )
 
 
 def build_sample_schedule(
@@ -901,6 +1155,7 @@ def sample_positions(
     reference_positions: torch.Tensor | None = None,
     anchor_protein: bool = False,
     sampler_diagnostics: SamplerDiagnostics | None = None,
+    snr_consistent: bool = False,
 ) -> tuple[torch.Tensor, list[torch.Tensor], SamplerDiagnostics | None]:
     ligand_mask = infer_ligand_mask(node_features) if anchor_protein else None
     if anchor_protein:
@@ -920,14 +1175,6 @@ def sample_positions(
     )
     step_diagnostics: list[SamplerStepDiagnostics] = []
     for loop_idx, (t, dt) in enumerate(schedule):
-        beta_t = beta_schedule_value(
-            t,
-            beta_min,
-            beta_max,
-            noise_schedule=noise_schedule,
-            cosine_offset=cosine_offset,
-            cosine_nu=cosine_nu,
-        )
         score = model(node_features, positions, edge_index, t)
         if anchor_protein and ligand_mask is not None:
             score = score.clone()
@@ -940,13 +1187,55 @@ def sample_positions(
         )
         score = score_before_clip.clamp(-score_clip, score_clip)
         previous_positions = positions.detach().clone()
-        positions = reverse_step(
-            positions,
-            SDEStep(t=t, dt=dt),
-            score,
-            beta_t,
-            max_score_norm=score_clip,
-        )
+        if snr_consistent:
+            alpha_t = alpha_bar_for_schedule(
+                t,
+                beta_min,
+                beta_max,
+                noise_schedule=noise_schedule,
+                cosine_offset=cosine_offset,
+                cosine_nu=cosine_nu,
+            ).clamp(1e-6, 1.0 - 1e-6)
+            t_prev = torch.clamp(t - dt, min=0.0)
+            alpha_prev = alpha_bar_for_schedule(
+                t_prev,
+                beta_min,
+                beta_max,
+                noise_schedule=noise_schedule,
+                cosine_offset=cosine_offset,
+                cosine_nu=cosine_nu,
+            ).clamp(1e-6, 1.0 - 1e-6)
+            sigma_t = torch.sqrt(torch.clamp_min(1.0 - alpha_t, 1e-8))
+            x0_hat = positions + score
+            eps_hat = (positions - torch.sqrt(alpha_t) * x0_hat) / sigma_t
+            var = (1.0 - alpha_prev) / (1.0 - alpha_t) * torch.clamp_min(
+                1.0 - alpha_t / alpha_prev, 0.0
+            )
+            mu_coef = torch.sqrt(torch.clamp_min(1.0 - alpha_prev - var, 0.0))
+            noise = torch.randn_like(positions)
+            if loop_idx == len(schedule) - 1:
+                noise = torch.zeros_like(positions)
+            positions = (
+                torch.sqrt(alpha_prev) * x0_hat
+                + mu_coef * eps_hat
+                + torch.sqrt(var) * noise
+            )
+        else:
+            beta_t = beta_schedule_value(
+                t,
+                beta_min,
+                beta_max,
+                noise_schedule=noise_schedule,
+                cosine_offset=cosine_offset,
+                cosine_nu=cosine_nu,
+            )
+            positions = reverse_step(
+                positions,
+                SDEStep(t=t, dt=dt),
+                score,
+                beta_t,
+                max_score_norm=score_clip,
+            )
         positions = torch.nan_to_num(
             positions,
             nan=0.0,
@@ -1010,8 +1299,9 @@ def write_sampler_diagnostics(path: Path, diagnostics: SamplerDiagnostics) -> No
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    command_argv = sys.argv[1:] if argv is None else argv
     if args.checkpoint_every < 0:
         raise ValueError("--checkpoint-every must be non-negative.")
     if args.dataset_limit < 0:
@@ -1020,6 +1310,18 @@ def main() -> int:
         raise ValueError("--sample-time-power must be positive.")
     if args.ligand_shape_weight < 0.0:
         raise ValueError("--ligand-shape-weight must be non-negative.")
+    if args.ligand_protein_clash_weight < 0.0:
+        raise ValueError("--ligand-protein-clash-weight must be non-negative.")
+    if args.ligand_protein_contact_weight < 0.0:
+        raise ValueError("--ligand-protein-contact-weight must be non-negative.")
+    if args.protein_node_budget <= 0:
+        raise ValueError("--protein-node-budget must be positive.")
+    if args.use_edge_attention and not args.frame_hetero_backbone:
+        raise ValueError("--use-edge-attention currently requires --frame-hetero-backbone.")
+    if args.use_cross_interface_block and not args.frame_hetero_backbone:
+        raise ValueError("--use-cross-interface-block currently requires --frame-hetero-backbone.")
+    if args.use_cross_interface_block and args.use_edge_attention:
+        raise ValueError("--use-cross-interface-block cannot be combined with --use-edge-attention in this cycle.")
     if dataset_mode_enabled(args) and (args.protein_path is not None or args.ligand_path is not None):
         raise ValueError("Dataset mode cannot be combined with --protein-path/--ligand-path.")
     if dataset_mode_enabled(args) and args.batch_size != 1:
@@ -1028,15 +1330,17 @@ def main() -> int:
     torch.manual_seed(args.seed)
     dataset_examples = build_dataset_examples(args) if dataset_mode_enabled(args) else None
     source_ids = None if dataset_examples is None else [entry.complex_id for entry in dataset_examples]
+    resolved_crop_cutoff: float | None = None
+    retained_protein_nodes: int | None = None
     if dataset_examples is not None:
-        node_features, positions, edge_index, ligand_bond_index = load_dataset_example(
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_dataset_example(
             dataset_examples[0],
             args,
             device,
         )
         graph_source = "dataset"
     else:
-        node_features, positions, edge_index, ligand_bond_index = load_graph_inputs(args, device)
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_graph_inputs(args, device)
         graph_source = "real_pair" if args.protein_path is not None else "synthetic"
 
     if args.dry_run:
@@ -1056,6 +1360,8 @@ def main() -> int:
         return 0
 
     model = make_model_for_node_dim(args, device, node_dim=node_features.size(-1))
+    if args.compile:
+        model = maybe_compile_model(model, enabled=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     checkpoint_output = resolve_checkpoint_output(args)
     resumed_state: CheckpointState | None = None
@@ -1090,7 +1396,7 @@ def main() -> int:
         current_complex_id = None
         if dataset_examples is not None:
             current_example = dataset_example_for_step(dataset_examples, step_idx)
-            node_features, positions, edge_index, ligand_bond_index = load_dataset_example(
+            node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_dataset_example(
                 current_example,
                 args,
                 device,
@@ -1098,21 +1404,26 @@ def main() -> int:
             current_complex_id = current_example.complex_id
 
         optimizer.zero_grad(set_to_none=True)
-        loss, beta_t, score_loss, bond_loss, shape_loss = training_step_with_breakdown(
-            model,
-            node_features,
-            positions,
-            edge_index,
-            ligand_bond_index,
-            args.beta_min,
-            args.beta_max,
-            ligand_bond_weight=args.ligand_bond_weight,
-            ligand_shape_weight=args.ligand_shape_weight,
-            frame_hetero_backbone=args.frame_hetero_backbone,
-            noise_schedule=args.noise_schedule,
-            cosine_offset=args.cosine_offset,
-            cosine_nu=args.cosine_nu,
-        )
+        train_snr = bool(args.snr_consistent or args.snr_mode in ("train", "full"))
+        with get_autocast_context(device, enabled=args.amp):
+            loss, beta_t, score_loss, bond_loss, shape_loss, clash_loss, contact_loss = training_step_with_breakdown(
+                model,
+                node_features,
+                positions,
+                edge_index,
+                ligand_bond_index,
+                args.beta_min,
+                args.beta_max,
+                ligand_bond_weight=args.ligand_bond_weight,
+                ligand_shape_weight=args.ligand_shape_weight,
+                ligand_protein_clash_weight=args.ligand_protein_clash_weight,
+                ligand_protein_contact_weight=args.ligand_protein_contact_weight,
+                frame_hetero_backbone=args.frame_hetero_backbone,
+                noise_schedule=args.noise_schedule,
+                cosine_offset=args.cosine_offset,
+                cosine_nu=args.cosine_nu,
+                snr_consistent=train_snr,
+            )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -1129,6 +1440,10 @@ def main() -> int:
                 )
             if args.ligand_shape_weight > 0.0:
                 line += f" shape_loss={shape_loss.item():.6f}"
+            if args.ligand_protein_clash_weight > 0.0:
+                line += f" clash_loss={clash_loss.item():.6f}"
+            if args.ligand_protein_contact_weight > 0.0:
+                line += f" contact_loss={contact_loss.item():.6f}"
             print(line)
 
         if checkpoint_output is not None and args.checkpoint_every > 0:
@@ -1152,6 +1467,7 @@ def main() -> int:
     if completed_steps == args.steps:
         print("resume_checkpoint_already_complete=true")
     print(f"training_seconds={elapsed:.3f}")
+    loss_csv_path: Path | None = args.loss_csv
     write_loss_csv(args.loss_csv, loss_rows)
     print(f"loss_csv={args.loss_csv}")
     if checkpoint_output is not None:
@@ -1171,7 +1487,7 @@ def main() -> int:
 
     if dataset_examples is not None:
         sample_example = dataset_example_for_step(dataset_examples, args.steps)
-        node_features, positions, edge_index, ligand_bond_index = load_dataset_example(
+        node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_dataset_example(
             sample_example,
             args,
             device,
@@ -1197,6 +1513,7 @@ def main() -> int:
                 experiment_log=str(args.experiment_log) if args.experiment_log is not None else None,
                 step_metrics=[],
             )
+        sampler_snr = bool(args.snr_consistent or args.snr_mode in ("sampler", "full"))
         sampled_positions, trajectory, sampler_diagnostics = sample_positions(
             model,
             node_features,
@@ -1215,22 +1532,32 @@ def main() -> int:
             reference_positions=positions,
             anchor_protein=args.frame_hetero_backbone,
             sampler_diagnostics=sampler_context,
+            snr_consistent=sampler_snr,
         )
-    write_pdb(args.output, sampled_positions)
-    write_trajectory_pdb(args.trajectory_output, trajectory)
-    print(f"sample_path={args.output}")
-    print(f"trajectory_path={args.trajectory_output}")
-    ligand_sample_path, ligand_trajectory_path = write_ligand_artifacts(
-        node_features=node_features,
-        sampled_positions=sampled_positions,
-        trajectory=trajectory,
-        ligand_output=args.ligand_output,
-        ligand_trajectory_output=args.ligand_trajectory_output,
-    )
-    if ligand_sample_path is not None:
-        print(f"ligand_sample_path={ligand_sample_path}")
-    if ligand_trajectory_path is not None:
-        print(f"ligand_trajectory_path={ligand_trajectory_path}")
+    sample_path: Path | None = None
+    trajectory_path: Path | None = None
+    ligand_sample_path: Path | None = None
+    ligand_trajectory_path: Path | None = None
+    if args.skip_pose_artifacts:
+        print("sample_artifacts=skipped")
+    else:
+        write_pdb(args.output, sampled_positions)
+        write_trajectory_pdb(args.trajectory_output, trajectory)
+        sample_path = args.output
+        trajectory_path = args.trajectory_output
+        print(f"sample_path={args.output}")
+        print(f"trajectory_path={args.trajectory_output}")
+        ligand_sample_path, ligand_trajectory_path = write_ligand_artifacts(
+            node_features=node_features,
+            sampled_positions=sampled_positions,
+            trajectory=trajectory,
+            ligand_output=args.ligand_output,
+            ligand_trajectory_output=args.ligand_trajectory_output,
+        )
+        if ligand_sample_path is not None:
+            print(f"ligand_sample_path={ligand_sample_path}")
+        if ligand_trajectory_path is not None:
+            print(f"ligand_trajectory_path={ligand_trajectory_path}")
     extra_metrics: dict[str, float] = {}
     ligand_mask = node_features[:, -1] > 0.5
     if graph_source in {"real_pair", "dataset"} and bool(ligand_mask.any()):
@@ -1244,18 +1571,22 @@ def main() -> int:
         extra_metrics["aligned_ligand_rmsd"] = aligned_ligand
         print(f"raw_ligand_rmse={raw_ligand_rmse:.6f}")
         print(f"aligned_ligand_rmsd={aligned_ligand:.6f}")
-    plot_written = maybe_write_plot(args.plot_output, trajectory, loss_rows)
-    if plot_written:
-        print(f"plot_path={args.plot_output}")
+    plot_written = False
+    if args.skip_plot:
+        print("plot_path=skipped")
     else:
-        print("plot_path=not_written (matplotlib not available)")
+        plot_written = maybe_write_plot(args.plot_output, trajectory, loss_rows)
+        if plot_written:
+            print(f"plot_path={args.plot_output}")
+        else:
+            print("plot_path=not_written (matplotlib not available)")
     if args.sampler_diagnostics_json is not None and sampler_diagnostics is not None:
         write_sampler_diagnostics(args.sampler_diagnostics_json, sampler_diagnostics)
         print(f"sampler_diagnostics_json={args.sampler_diagnostics_json}")
     if args.experiment_log is not None:
         write_experiment_log(
             args.experiment_log,
-            command=f"uv run python -m equidock_diff.train {shlex.join(sys.argv[1:])}",
+            command=f"uv run python -m equidock_diff.train {shlex.join(command_argv)}",
             device=device,
             graph_source=graph_source,
             args=args,
@@ -1263,11 +1594,13 @@ def main() -> int:
             training_seconds=elapsed,
             node_count=positions.size(0),
             edge_count=edge_index.size(1),
-            sample_path=args.output,
-            trajectory_path=args.trajectory_output,
-            loss_csv_path=args.loss_csv,
+            sample_path=sample_path,
+            trajectory_path=trajectory_path,
+            loss_csv_path=loss_csv_path,
             plot_path=args.plot_output if plot_written else None,
             extra_metrics=extra_metrics or None,
+            resolved_crop_cutoff=resolved_crop_cutoff,
+            retained_protein_nodes=retained_protein_nodes,
         )
         print(f"experiment_log={args.experiment_log}")
     return 0

@@ -1,0 +1,6 @@
+candidate,context_policy,protein_node_budget,crop_cutoff,mean_raw_rmse,mean_aligned_rmsd,aligned_delta_vs_fixed8,raw_delta_vs_fixed8,aligned_delta_vs_adaptive,raw_delta_vs_adaptive,improved_complexes_vs_fixed8,hard_case_gate_pass
+fixed_8,fixed,256,8.0,1.319712,1.002507,0.000000,0.000000,0.072066,0.116099,0,no
+adaptive,adaptive,256,8.0,1.203613,0.930441,-0.072066,-0.116099,0.000000,0.000000,6,no
+gated_192,gated,192,8.0,1.207976,0.926776,-0.075731,-0.111736,-0.003665,0.004363,4,no
+gated_256,gated,256,8.0,1.308936,0.992060,-0.010446,-0.010777,0.061619,0.105322,5,no
+gated_320,gated,320,8.0,1.316610,0.998954,-0.003553,-0.003102,0.068513,0.112997,4,no

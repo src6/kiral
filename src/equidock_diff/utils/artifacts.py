@@ -86,11 +86,13 @@ def write_experiment_log(
     training_seconds: float,
     node_count: int,
     edge_count: int,
-    sample_path: Path,
-    trajectory_path: Path,
-    loss_csv_path: Path,
+    sample_path: Path | None,
+    trajectory_path: Path | None,
+    loss_csv_path: Path | None,
     plot_path: Path | None,
     extra_metrics: dict[str, float] | None = None,
+    resolved_crop_cutoff: float | None = None,
+    retained_protein_nodes: int | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     final_step, final_loss, final_beta = loss_rows[-1]
@@ -107,15 +109,26 @@ def write_experiment_log(
         f"- Node count: `{node_count}`",
         f"- Edge count: `{edge_count}`",
         f"- Crop cutoff: `{args.crop_cutoff}`",
+        f"- Context policy: `{getattr(args, 'context_policy', 'fixed')}`",
         f"- Edge cutoff: `{args.edge_cutoff}`",
+        f"- Use cross interface block: `{bool(getattr(args, 'use_cross_interface_block', False))}`",
         f"- Final loss: `{final_loss:.6f}` at step `{final_step}`",
         f"- Best loss: `{best_loss:.6f}`",
         f"- Final beta_t: `{final_beta:.4f}`",
         f"- Training seconds: `{training_seconds:.3f}`",
-        f"- Loss CSV: `{loss_csv_path}`",
-        f"- Sample artifact: `{sample_path}`",
-        f"- Trajectory artifact: `{trajectory_path}`",
     ]
+    if loss_csv_path is not None:
+        lines.append(f"- Loss CSV: `{loss_csv_path}`")
+    if sample_path is not None:
+        lines.append(f"- Sample artifact: `{sample_path}`")
+    if trajectory_path is not None:
+        lines.append(f"- Trajectory artifact: `{trajectory_path}`")
+    if resolved_crop_cutoff is not None:
+        lines.append(f"- Resolved crop cutoff: `{resolved_crop_cutoff:.6f}`")
+    if getattr(args, "context_policy", "fixed") == "gated":
+        lines.append(f"- Protein node budget: `{getattr(args, 'protein_node_budget', '')}`")
+    if retained_protein_nodes is not None:
+        lines.append(f"- Retained protein nodes: `{retained_protein_nodes}`")
     if extra_metrics is not None:
         for key, value in extra_metrics.items():
             lines.append(f"- {key.replace('_', ' ').title()}: `{value:.6f}`")

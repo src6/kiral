@@ -35,6 +35,20 @@ BOND_STEREO_TO_INDEX = {
 ATOM_FEATURE_DIM = 16
 BOND_FEATURE_DIM = 8
 
+# Approximate van der Waals radii in Angstrom used for soft clash checks.
+ATOM_CLASH_RADII = {
+    "C": 1.70,
+    "N": 1.55,
+    "O": 1.52,
+    "S": 1.80,
+    "P": 1.80,
+    "F": 1.47,
+    "Cl": 1.75,
+    "Br": 1.85,
+    "I": 1.98,
+    "OTHER": 1.70,
+}
+
 SkipReason = Literal[
     "parse_failed",
     "sanitize_failed",
@@ -408,4 +422,147 @@ def featurize_ligand(
             edge_index=edge_index,
             edge_attr=edge_attr,
         )
+    )
+
+
+@dataclass(frozen=True)
+class ChemicalHealthReport:
+    total_atoms: int
+    ligand_atoms: int
+    protein_atoms: int
+    clash_count: int
+    clash_fraction: float
+    bond_violation_count: int
+    max_bond_deviation: float
+    is_valid: bool
+
+
+def evaluate_steric_clashes(
+    positions: torch.Tensor,
+    node_features: torch.Tensor,
+    clash_ratio_threshold: float = 0.75,
+    clash_margin: float = 0.2,
+) -> tuple[int, float, list[tuple[int, int, float]]]:
+    """Evaluate steric clashes between ligand and protein atoms.
+
+    A clash occurs when the inter-atomic distance is smaller than the sum of
+    their van der Waals radii scaled by clash_ratio_threshold or within clash_margin.
+    """
+    if positions.size(0) == 0 or node_features.size(0) == 0:
+        return 0, 0.0, []
+
+    is_ligand = node_features[:, -1] > 0.5
+    is_protein = ~is_ligand
+
+    if not is_ligand.any() or not is_protein.any():
+        return 0, 0.0, []
+
+    ligand_indices = torch.nonzero(is_ligand, as_tuple=True)[0]
+    protein_indices = torch.nonzero(is_protein, as_tuple=True)[0]
+
+    # Assign default clash radii based on one-hot symbol if available
+    radii = torch.full((positions.size(0),), ATOM_CLASH_RADII["C"], dtype=positions.dtype, device=positions.device)
+    for idx, sym in enumerate(ATOM_SYMBOLS[:-1]):
+        if idx < node_features.size(1):
+            mask = node_features[:, idx] > 0.5
+            if mask.any():
+                radii[mask] = ATOM_CLASH_RADII.get(sym, ATOM_CLASH_RADII["OTHER"])
+
+    lig_pos = positions[ligand_indices]
+    prot_pos = positions[protein_indices]
+    lig_radii = radii[ligand_indices]
+    prot_radii = radii[protein_indices]
+
+    dist_matrix = torch.cdist(lig_pos, prot_pos)
+    sum_radii = lig_radii.unsqueeze(1) + prot_radii.unsqueeze(0)
+    clash_thresholds = torch.maximum(sum_radii * clash_ratio_threshold, sum_radii - clash_margin)
+
+    clashes = dist_matrix < clash_thresholds
+    clash_pairs: list[tuple[int, int, float]] = []
+    if clashes.any():
+        viol_indices = torch.nonzero(clashes, as_tuple=False)
+        for v in viol_indices:
+            l_idx = int(ligand_indices[v[0]].item())
+            p_idx = int(protein_indices[v[1]].item())
+            d = float(dist_matrix[v[0], v[1]].item())
+            clash_pairs.append((l_idx, p_idx, d))
+
+    clash_count = len(clash_pairs)
+    total_ligand_atoms = int(is_ligand.sum().item())
+    clash_fraction = clash_count / max(total_ligand_atoms, 1)
+    return clash_count, clash_fraction, clash_pairs
+
+
+def evaluate_bond_lengths(
+    positions: torch.Tensor,
+    ligand_bond_index: torch.Tensor | None,
+    reference_positions: torch.Tensor | None = None,
+    min_allowed_len: float = 0.85,
+    max_allowed_len: float = 2.30,
+    max_allowed_strain_pct: float = 0.35,
+) -> tuple[int, float]:
+    """Evaluate covalent bond length validity against biophysical limits and reference poses."""
+    if ligand_bond_index is None or ligand_bond_index.numel() == 0:
+        return 0, 0.0
+
+    src, dst = ligand_bond_index[0], ligand_bond_index[1]
+    keep = src < dst
+    if not keep.any():
+        return 0, 0.0
+    src = src[keep]
+    dst = dst[keep]
+
+    lengths = torch.linalg.norm(positions[src] - positions[dst], dim=-1)
+    violations = (lengths < min_allowed_len) | (lengths > max_allowed_len)
+
+    max_dev = 0.0
+    if reference_positions is not None:
+        ref_lengths = torch.linalg.norm(reference_positions[src] - reference_positions[dst], dim=-1)
+        strain = torch.abs(lengths - ref_lengths) / torch.clamp_min(ref_lengths, 1e-6)
+        violations = violations | (strain > max_allowed_strain_pct)
+        max_dev = float(torch.max(torch.abs(lengths - ref_lengths)).item()) if ref_lengths.numel() > 0 else 0.0
+    else:
+        # Deviation from nominal 1.45 Å bond length
+        nominal_diff = torch.abs(lengths - 1.45)
+        max_dev = float(torch.max(nominal_diff).item()) if lengths.numel() > 0 else 0.0
+
+    return int(violations.sum().item()), max_dev
+
+
+def evaluate_chemical_validity(
+    positions: torch.Tensor,
+    node_features: torch.Tensor,
+    ligand_bond_index: torch.Tensor | None = None,
+    reference_positions: torch.Tensor | None = None,
+    clash_ratio_threshold: float = 0.75,
+    clash_margin: float = 0.2,
+) -> ChemicalHealthReport:
+    """Produce unified PoseBusters-style chemical validity report."""
+    is_ligand = node_features[:, -1] > 0.5
+    ligand_atoms = int(is_ligand.sum().item())
+    protein_atoms = int((~is_ligand).sum().item())
+    total_atoms = positions.size(0)
+
+    clash_count, clash_fraction, _ = evaluate_steric_clashes(
+        positions,
+        node_features,
+        clash_ratio_threshold=clash_ratio_threshold,
+        clash_margin=clash_margin,
+    )
+    bond_violations, max_bond_dev = evaluate_bond_lengths(
+        positions,
+        ligand_bond_index,
+        reference_positions=reference_positions,
+    )
+    is_valid = (clash_count == 0) and (bond_violations == 0)
+
+    return ChemicalHealthReport(
+        total_atoms=total_atoms,
+        ligand_atoms=ligand_atoms,
+        protein_atoms=protein_atoms,
+        clash_count=clash_count,
+        clash_fraction=clash_fraction,
+        bond_violation_count=bond_violations,
+        max_bond_deviation=max_bond_dev,
+        is_valid=is_valid,
     )

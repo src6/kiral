@@ -1,6 +1,6 @@
 [project]
 name = "equidock-diff"
-version = "0.1.0"
+version = "0.2.0"
 description = "Compact equivariant diffusion system for protein-ligand docking"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -17,6 +17,10 @@ dependencies = [
 test = [
     "pytest",
 ]
+
+[project.scripts]
+equidock = "equidock_diff.cli:main"
+equidock-diff = "equidock_diff.cli:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

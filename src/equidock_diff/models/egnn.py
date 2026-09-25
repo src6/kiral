@@ -21,6 +21,23 @@ class EGNNConfig:
     use_ligand_global_node: bool = False
     use_complete_frame: bool = False
     use_frame_hetero_backbone: bool = False
+    use_edge_attention: bool = False
+    use_cross_interface_block: bool = False
+
+
+def incoming_edge_softmax(
+    logits: torch.Tensor,
+    dst: torch.Tensor,
+    num_nodes: int,
+) -> torch.Tensor:
+    if logits.dim() != 1:
+        raise ValueError("logits must have shape [E].")
+    weights = torch.zeros_like(logits)
+    for node_index in range(num_nodes):
+        edge_mask = dst == node_index
+        if bool(edge_mask.any()):
+            weights[edge_mask] = torch.softmax(logits[edge_mask], dim=0)
+    return weights
 
 
 def infer_ligand_mask(node_features: torch.Tensor) -> torch.Tensor:
@@ -126,6 +143,20 @@ class EGNNLayer(nn.Module):
                 ]
             )
             self.edge_mlp = None
+            self.edge_attention_mlps = (
+                nn.ModuleList(
+                    [
+                        nn.Sequential(
+                            nn.Linear(2 * config.hidden_dim + 4, config.hidden_dim),
+                            nn.SiLU(),
+                            nn.Linear(config.hidden_dim, 1),
+                        )
+                        for _ in range(NUM_EDGE_TYPES)
+                    ]
+                )
+                if config.use_edge_attention
+                else None
+            )
         else:
             self.edge_mlps = None
             self.coord_mlps = None
@@ -135,6 +166,16 @@ class EGNNLayer(nn.Module):
                 nn.Linear(config.hidden_dim, config.hidden_dim),
                 nn.SiLU(),
             )
+            self.edge_attention_mlps = None
+        self.edge_attention_mlp = (
+            nn.Sequential(
+                nn.Linear(2 * config.hidden_dim + 1, config.hidden_dim),
+                nn.SiLU(),
+                nn.Linear(config.hidden_dim, 1),
+            )
+            if (config.use_edge_attention and not config.use_frame_hetero_backbone)
+            else None
+        )
         if config.use_hetero_edges:
             self.message_transforms = nn.ModuleList(
                 [_make_identity_linear(config.hidden_dim) for _ in range(NUM_EDGE_TYPES)]
@@ -173,9 +214,11 @@ class EGNNLayer(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         src, dst = edge_index
         diff = positions[src] - positions[dst]
+        num_nodes = node_states.size(0)
         if self.config.use_frame_hetero_backbone:
             scalar_features = scalarize_local_frame(positions[src], positions[dst])
             messages = torch.zeros_like(node_states[src])
+            attention_logits = torch.zeros(messages.size(0), device=messages.device, dtype=messages.dtype)
             assert self.edge_mlps is not None
             for edge_type in range(NUM_EDGE_TYPES):
                 edge_mask = edge_types == edge_type
@@ -186,6 +229,8 @@ class EGNNLayer(nn.Module):
                     dim=-1,
                 )
                 messages[edge_mask] = self.edge_mlps[edge_type](edge_inputs)
+                if self.edge_attention_mlps is not None:
+                    attention_logits[edge_mask] = self.edge_attention_mlps[edge_type](edge_inputs).squeeze(-1)
         else:
             radial = diff.pow(2).sum(dim=-1, keepdim=True)
             assert self.edge_mlp is not None
@@ -200,8 +245,18 @@ class EGNNLayer(nn.Module):
                     if not bool(edge_mask.any()):
                         continue
                     messages[edge_mask] = self.message_transforms[edge_type](base_messages[edge_mask])
+            attention_logits = (
+                self.edge_attention_mlp(edge_inputs).squeeze(-1)
+                if self.edge_attention_mlp is not None
+                else None
+            )
 
-        num_nodes = node_states.size(0)
+        if self.config.use_edge_attention:
+            if attention_logits is None:
+                raise ValueError("attention logits are required when edge attention is enabled.")
+            attention_weights = incoming_edge_softmax(attention_logits, dst, num_nodes)
+            messages = messages * attention_weights.unsqueeze(-1)
+
         aggregated = torch.zeros_like(node_states)
         aggregated.index_add_(0, dst, messages)
         if self.ligand_global_mlp is not None and ligand_mask is not None and bool(ligand_mask.any()):
@@ -257,6 +312,65 @@ class EGNNLayer(nn.Module):
         updated_positions = positions + coord_updates
         return updated_states, updated_positions
 
+
+class CrossInterfaceBlock(nn.Module):
+    """Protein-to-ligand hidden-state update using frame-based cross-edge messages."""
+
+    def __init__(self, config: EGNNConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.edge_mlps = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(2 * config.hidden_dim + 4, config.hidden_dim),
+                    nn.SiLU(),
+                    nn.Linear(config.hidden_dim, config.hidden_dim),
+                    nn.SiLU(),
+                )
+                for _ in range(NUM_EDGE_TYPES)
+            ]
+        )
+        self.node_mlp = nn.Sequential(
+            nn.Linear(2 * config.hidden_dim, config.hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+        )
+
+    def forward(
+        self,
+        node_states: torch.Tensor,
+        positions: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_types: torch.Tensor,
+        ligand_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        src, dst = edge_index
+        cross_mask = (~ligand_mask[src]) & ligand_mask[dst]
+        if not bool(cross_mask.any()):
+            return node_states
+
+        messages = torch.zeros_like(node_states)
+        scalar_features = scalarize_local_frame(positions[src], positions[dst])
+        for edge_type in range(NUM_EDGE_TYPES):
+            edge_mask = cross_mask & (edge_types == edge_type)
+            if not bool(edge_mask.any()):
+                continue
+            edge_inputs = torch.cat(
+                [node_states[src[edge_mask]], node_states[dst[edge_mask]], scalar_features[edge_mask]],
+                dim=-1,
+            )
+            edge_messages = self.edge_mlps[edge_type](edge_inputs)
+            messages.index_add_(0, dst[edge_mask], edge_messages)
+
+        if not bool(ligand_mask.any()):
+            return node_states
+        updated_states = node_states.clone()
+        updated_states[ligand_mask] = updated_states[ligand_mask] + self.node_mlp(
+            torch.cat([node_states[ligand_mask], messages[ligand_mask]], dim=-1)
+        )
+        return updated_states
+
+
 class EGNNScoreNet(nn.Module):
     """Interface for an EGNN-based score network.
 
@@ -271,6 +385,11 @@ class EGNNScoreNet(nn.Module):
             nn.Linear(1, config.time_dim),
             nn.SiLU(),
             nn.Linear(config.time_dim, config.hidden_dim),
+        )
+        self.cross_interface_blocks = (
+            nn.ModuleList(CrossInterfaceBlock(config) for _ in range(max(config.num_layers, 1)))
+            if config.use_cross_interface_block
+            else None
         )
         self.layers = nn.ModuleList(
             EGNNLayer(config) for _ in range(max(config.num_layers, 1))
@@ -331,7 +450,17 @@ class EGNNScoreNet(nn.Module):
                 dtype=edge_index.dtype,
             )
         hidden_positions = centered_positions
-        for layer in self.layers:
+        for layer_index, layer in enumerate(self.layers):
+            if self.cross_interface_blocks is not None:
+                if ligand_mask is None:
+                    raise ValueError("ligand_mask is required when the cross-interface block is enabled.")
+                node_states = self.cross_interface_blocks[layer_index](
+                    node_states,
+                    hidden_positions,
+                    edge_index,
+                    edge_types,
+                    ligand_mask,
+                )
             node_states, hidden_positions = layer(
                 node_states,
                 hidden_positions,

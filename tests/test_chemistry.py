@@ -9,8 +9,12 @@ from equidock_diff.utils.chemistry import (
     ATOM_FEATURE_DIM,
     BOND_FEATURE_DIM,
     ATOM_SYMBOLS,
+    ChemicalHealthReport,
     FeaturizeOutcome,
     LigandSkipCounter,
+    evaluate_bond_lengths,
+    evaluate_chemical_validity,
+    evaluate_steric_clashes,
     featurize_ligand,
 )
 
@@ -146,3 +150,89 @@ def test_unknown_atom_symbol_maps_to_other_channel(tmp_path: Path) -> None:
     other_atom_index = ATOM_SYMBOLS.index("OTHER")
     assert outcome.graph.x.shape[1] == ATOM_FEATURE_DIM
     assert outcome.graph.x[0, other_atom_index].item() == 1.0
+
+
+def test_evaluate_steric_clashes_detects_overlap() -> None:
+    # 2 protein atoms, 2 ligand atoms
+    # Node features: last column is ligand indicator (0.0 for protein, 1.0 for ligand)
+    node_features = torch.zeros(4, ATOM_FEATURE_DIM, dtype=torch.float32)
+    node_features[:2, -1] = 0.0  # protein
+    node_features[2:, -1] = 1.0  # ligand
+
+    # Case 1: Overlapping (clashing) coordinates
+    clashing_positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],  # protein 0
+            [5.0, 0.0, 0.0],  # protein 1
+            [0.4, 0.0, 0.0],  # ligand 2 (overlaps with protein 0, dist 0.4 < 1.7+1.7)
+            [10.0, 0.0, 0.0],  # ligand 3 (far away)
+        ],
+        dtype=torch.float32,
+    )
+    clash_count, clash_fraction, pairs = evaluate_steric_clashes(clashing_positions, node_features)
+    assert clash_count == 1
+    assert clash_fraction == 0.5
+    assert len(pairs) == 1
+    assert pairs[0][0] == 2 and pairs[0][1] == 0
+
+    # Case 2: Well-separated coordinates
+    clean_positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [15.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    clash_count, clash_fraction, pairs = evaluate_steric_clashes(clean_positions, node_features)
+    assert clash_count == 0
+    assert clash_fraction == 0.0
+    assert len(pairs) == 0
+
+
+def test_evaluate_bond_lengths_detects_distortion() -> None:
+    # 3 atoms with 2 bonds: (0, 1) and (1, 2)
+    bond_index = torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]], dtype=torch.long)
+
+    # Normal bond lengths ~ 1.4 Å
+    valid_positions = torch.tensor(
+        [[0.0, 0.0, 0.0], [1.4, 0.0, 0.0], [2.8, 0.0, 0.0]], dtype=torch.float32
+    )
+    violations, max_dev = evaluate_bond_lengths(valid_positions, bond_index)
+    assert violations == 0
+    assert max_dev < 0.1
+
+    # Severely stretched bond (0, 1) at 4.0 Å
+    stretched_positions = torch.tensor(
+        [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [5.4, 0.0, 0.0]], dtype=torch.float32
+    )
+    violations, max_dev = evaluate_bond_lengths(stretched_positions, bond_index)
+    assert violations >= 1
+    assert max_dev >= 2.0
+
+
+def test_evaluate_chemical_validity_report() -> None:
+    node_features = torch.zeros(4, ATOM_FEATURE_DIM, dtype=torch.float32)
+    node_features[:2, -1] = 0.0  # protein
+    node_features[2:, -1] = 1.0  # ligand
+
+    positions = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [11.4, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    ligand_bonds = torch.tensor([[2, 3], [3, 2]], dtype=torch.long)
+
+    report = evaluate_chemical_validity(positions, node_features, ligand_bonds)
+    assert isinstance(report, ChemicalHealthReport)
+    assert report.total_atoms == 4
+    assert report.ligand_atoms == 2
+    assert report.protein_atoms == 2
+    assert report.clash_count == 0
+    assert report.bond_violation_count == 0
+    assert report.is_valid is True
