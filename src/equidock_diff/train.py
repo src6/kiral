@@ -32,6 +32,7 @@ from equidock_diff.utils.artifacts import (
     write_experiment_log,
     write_ligand_artifacts,
     write_loss_csv,
+    write_loss_terms_csv,
     write_pdb,
     write_trajectory_pdb,
 )
@@ -1401,6 +1402,8 @@ def main(argv: list[str] | None = None) -> int:
     loss_rows: list[tuple[int, float, float]] = [] if resumed_state is None else list(
         resumed_state.loss_rows
     )
+    # per-term trace: a flat averaged loss can hide a geometry term that never improves
+    term_rows: list[tuple[int, float, float, float, float]] = []
 
     start = perf_counter()
     for step_idx in range(completed_steps + 1, args.steps + 1):
@@ -1439,6 +1442,9 @@ def main(argv: list[str] | None = None) -> int:
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         loss_rows.append((step_idx, float(loss.item()), beta_t))
+        term_rows.append(
+            (step_idx, float(score_loss), float(bond_loss), float(shape_loss), float(clash_loss))
+        )
 
         if step_idx == 1 or step_idx == args.steps or step_idx % max(args.steps // 5, 1) == 0:
             line = f"step={step_idx} loss={loss.item():.6f} beta_t={beta_t:.4f}"
@@ -1480,6 +1486,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"training_seconds={elapsed:.3f}")
     loss_csv_path: Path | None = args.loss_csv
     write_loss_csv(args.loss_csv, loss_rows)
+    write_loss_terms_csv(args.loss_csv.with_name("loss_terms.csv"), term_rows)
     print(f"loss_csv={args.loss_csv}")
     if checkpoint_output is not None:
         save_checkpoint(

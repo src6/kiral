@@ -75,6 +75,19 @@ def write_loss_csv(path: Path, rows: list[tuple[int, float, float]]) -> None:
         writer.writerows(rows)
 
 
+def write_loss_terms_csv(path: Path, rows: list[tuple[int, float, float, float, float]]) -> None:
+    """Write the per-term loss breakdown.
+
+    A single averaged loss hides which component is failing: the score term outvotes the geometry
+    terms, so a total that looks flat can sit on top of a clash or bond term that never improves.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["step", "score", "bond", "shape", "clash"])
+        writer.writerows(rows)
+
+
 def write_experiment_log(
     path: Path,
     *,
