@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import torch
@@ -85,6 +86,43 @@ def write_loss_terms_csv(path: Path, rows: list[tuple[int, float, float, float, 
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["step", "score", "bond", "shape", "clash"])
+        writer.writerows(rows)
+
+
+LOSS_TERM_COLUMNS = ("loss", "score", "bond", "shape", "clash")
+
+
+def mean_loss_terms(rows: Iterable[Sequence[float]]) -> tuple[float, ...]:
+    """Average each loss term across the rows of one evaluation pass.
+
+    Validation complexes are scored one at a time (dataset mode is batch size 1), so the number
+    reported per term has to be an explicit mean over complexes. Reporting the last row instead
+    would make the held-out trace depend on the order the split file happens to be written in.
+    """
+    materialized = [tuple(float(value) for value in row) for row in rows]
+    if not materialized:
+        raise ValueError("mean_loss_terms requires at least one row.")
+    width = len(materialized[0])
+    if any(len(row) != width for row in materialized):
+        raise ValueError("all rows must carry the same number of loss terms.")
+    count = len(materialized)
+    return tuple(sum(row[column] for row in materialized) / count for column in range(width))
+
+
+def write_validation_loss_csv(
+    path: Path,
+    rows: list[tuple[int, float, float, float, float, float]],
+) -> None:
+    """Write the held-out validation trace to its own file.
+
+    Kept out of ``loss_terms.csv`` on purpose: that file has one row per training step on whichever
+    complex the step sampled, so folding a per-evaluation mean over held-out complexes into it would
+    leave a single file carrying two different granularities.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["step", *LOSS_TERM_COLUMNS])
         writer.writerows(rows)
 
 

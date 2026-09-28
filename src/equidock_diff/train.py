@@ -29,12 +29,15 @@ from equidock_diff.models.egnn import EGNNConfig, infer_ligand_mask
 from equidock_diff.models.score_net import ScoreNet, ScoreNetConfig
 from equidock_diff.models.amp_utils import get_autocast_context, maybe_compile_model
 from equidock_diff.utils.artifacts import (
+    LOSS_TERM_COLUMNS,
+    mean_loss_terms,
     write_experiment_log,
     write_ligand_artifacts,
     write_loss_csv,
     write_loss_terms_csv,
     write_pdb,
     write_trajectory_pdb,
+    write_validation_loss_csv,
 )
 from equidock_diff.utils.chemistry import ATOM_CLASH_RADII, ATOM_SYMBOLS, evaluate_chemical_validity
 from equidock_diff.utils.geometry import aligned_rmsd, random_rotation_matrix
@@ -380,6 +383,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional limit on the number of dataset complexes to use; 0 keeps all",
     )
     parser.add_argument(
+        "--validation-split",
+        type=Path,
+        default=None,
+        help="Optional split file of held-out complex ids, one per line, for a validation loss",
+    )
+    parser.add_argument(
+        "--validation-every",
+        type=int,
+        default=0,
+        help="Evaluate the validation split every N steps; 0 (the default) disables it",
+    )
+    parser.add_argument(
         "--dataset-cache-dir",
         type=Path,
         default=Path("data/.cache/equidock_diff_graphs"),
@@ -541,6 +556,7 @@ PATH_ARG_NAMES = {
     "dataset_root",
     "dataset_split",
     "dataset_cache_dir",
+    "validation_split",
     "sampler_diagnostics_json",
 }
 
@@ -573,6 +589,26 @@ def build_dataset_examples(args: argparse.Namespace) -> list[ProteinLigandPaths]
         examples = examples[: args.dataset_limit]
     if not examples:
         raise ValueError(f"No dataset protein-ligand pairs found under {dataset_root}.")
+    return examples
+
+
+def validation_mode_enabled(args: argparse.Namespace) -> bool:
+    return args.validation_split is not None and args.validation_every > 0
+
+
+def build_validation_examples(args: argparse.Namespace) -> list[ProteinLigandPaths]:
+    """Load the held-out complexes from ``--validation-split``.
+
+    ``--dataset-limit`` deliberately does not apply here: it exists to shorten a training run, and
+    letting it silently shrink the validation set would make the numbers of two runs incomparable
+    for a reason nobody could see in the log.
+    """
+    dataset_root = args.dataset_root or Path("data/pdbbind_v2020")
+    examples = load_pdbbind_split_paths(dataset_root, args.validation_split)
+    if not examples:
+        raise ValueError(
+            f"No validation complexes found under {dataset_root} for {args.validation_split}."
+        )
     return examples
 
 
@@ -1070,6 +1106,74 @@ def training_step_with_breakdown(
     )
 
 
+def evaluate_validation_loss(
+    model: nn.Module,
+    validation_examples: list[ProteinLigandPaths],
+    args: argparse.Namespace,
+    device: torch.device,
+) -> tuple[float, ...]:
+    """Score the held-out complexes and mean each loss term.
+
+    The estimator is deliberately identical to the training one (one randomly noised timestep per
+    complex, same precision policy under ``--amp``): the gap between this mean and the per-step
+    training loss is the whole point of the instrument, and it only means something if both numbers
+    are computed the same way. Gradients are disabled and no parameter or RNG state is touched, so
+    measuring the run cannot change it.
+    """
+    rows: list[tuple[float, float, float, float, float]] = []
+    validation_snr = bool(args.snr_consistent or args.snr_mode in ("train", "full"))
+    with torch.no_grad():
+        # Autocast matches the training path: precision shifts the loss scale slightly, and a
+        # validation number that is not on the same scale as the training trace invites a false
+        # conclusion.
+        with get_autocast_context(device, enabled=args.amp):
+            for example in validation_examples:
+                (
+                    node_features,
+                    positions,
+                    edge_index,
+                    ligand_bond_index,
+                    _,
+                    _,
+                ) = load_dataset_example(example, args, device)
+                (
+                    loss,
+                    _,
+                    score_loss,
+                    bond_loss,
+                    shape_loss,
+                    clash_loss,
+                    _,
+                ) = training_step_with_breakdown(
+                    model,
+                    node_features,
+                    positions,
+                    edge_index,
+                    ligand_bond_index,
+                    args.beta_min,
+                    args.beta_max,
+                    ligand_bond_weight=args.ligand_bond_weight,
+                    ligand_shape_weight=args.ligand_shape_weight,
+                    ligand_protein_clash_weight=args.ligand_protein_clash_weight,
+                    ligand_protein_contact_weight=args.ligand_protein_contact_weight,
+                    frame_hetero_backbone=args.frame_hetero_backbone,
+                    noise_schedule=args.noise_schedule,
+                    cosine_offset=args.cosine_offset,
+                    cosine_nu=args.cosine_nu,
+                    snr_consistent=validation_snr,
+                )
+                rows.append(
+                    (
+                        float(loss),
+                        float(score_loss),
+                        float(bond_loss),
+                        float(shape_loss),
+                        float(clash_loss),
+                    )
+                )
+    return mean_loss_terms(rows)
+
+
 def build_sample_schedule(
     sample_steps: int,
     *,
@@ -1318,6 +1422,12 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--checkpoint-every must be non-negative.")
     if args.dataset_limit < 0:
         raise ValueError("--dataset-limit must be non-negative.")
+    if args.validation_every < 0:
+        raise ValueError("--validation-every must be non-negative.")
+    if args.validation_split is not None and args.validation_every <= 0:
+        # A split that is loaded and then never evaluated is the silent no-op the 0 default exists
+        # to prevent, so refuse the combination rather than pretending to validate.
+        raise ValueError("--validation-split requires --validation-every > 0.")
     if args.sample_time_power <= 0.0:
         raise ValueError("--sample-time-power must be positive.")
     if args.ligand_shape_weight < 0.0:
@@ -1342,6 +1452,20 @@ def main(argv: list[str] | None = None) -> int:
     torch.manual_seed(args.seed)
     dataset_examples = build_dataset_examples(args) if dataset_mode_enabled(args) else None
     source_ids = None if dataset_examples is None else [entry.complex_id for entry in dataset_examples]
+    validation_examples = build_validation_examples(args) if validation_mode_enabled(args) else None
+    if validation_examples is not None:
+        print(f"validation_size={len(validation_examples)}")
+        print(f"validation_every={args.validation_every}")
+        if source_ids is not None:
+            overlap = sorted(
+                {entry.complex_id for entry in validation_examples}.intersection(source_ids)
+            )
+            if overlap:
+                # An id in both splits makes the "held-out" number partly a training number; better
+                # to say it in the log than to report it as generalisation.
+                print(
+                    f"validation_overlap_with_training={len(overlap)} ids={', '.join(overlap[:5])}"
+                )
     resolved_crop_cutoff: float | None = None
     retained_protein_nodes: int | None = None
     if dataset_examples is not None:
@@ -1404,6 +1528,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     # per-term trace: a flat averaged loss can hide a geometry term that never improves
     term_rows: list[tuple[int, float, float, float, float]] = []
+    # held-out trace: the rows above follow whichever complex each step sampled, so on their own
+    # they cannot tell "learning the task" apart from "memorising this complex"
+    validation_rows: list[tuple[int, float, float, float, float, float]] = []
 
     start = perf_counter()
     for step_idx in range(completed_steps + 1, args.steps + 1):
@@ -1463,6 +1590,14 @@ def main(argv: list[str] | None = None) -> int:
                 line += f" contact_loss={contact_loss.item():.6f}"
             print(line)
 
+        if validation_examples is not None and step_idx % args.validation_every == 0:
+            validation_terms = evaluate_validation_loss(model, validation_examples, args, device)
+            validation_rows.append((step_idx, *validation_terms))
+            breakdown = " ".join(
+                f"{name}={value:.6f}" for name, value in zip(LOSS_TERM_COLUMNS, validation_terms)
+            )
+            print(f"validation step={step_idx} {breakdown} complexes={len(validation_examples)}")
+
         if checkpoint_output is not None and args.checkpoint_every > 0:
             if step_idx % args.checkpoint_every == 0:
                 elapsed_for_checkpoint = prior_training_seconds + (perf_counter() - start)
@@ -1488,6 +1623,15 @@ def main(argv: list[str] | None = None) -> int:
     write_loss_csv(args.loss_csv, loss_rows)
     write_loss_terms_csv(args.loss_csv.with_name("loss_terms.csv"), term_rows)
     print(f"loss_csv={args.loss_csv}")
+    if validation_examples is not None:
+        if validation_rows:
+            validation_csv_path = args.loss_csv.with_name("validation_loss.csv")
+            write_validation_loss_csv(validation_csv_path, validation_rows)
+            print(f"validation_loss_csv={validation_csv_path}")
+        else:
+            # Enabled but never reached (fewer steps than the interval): say so out loud instead of
+            # leaving a reader to wonder why the file is missing.
+            print("validation_loss=not_evaluated")
     if checkpoint_output is not None:
         save_checkpoint(
             checkpoint_output,
