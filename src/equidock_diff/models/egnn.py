@@ -414,6 +414,7 @@ class EGNNScoreNet(nn.Module):
         positions: torch.Tensor,
         edge_index: torch.Tensor,
         time: torch.Tensor,
+        batch_index: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if node_features.dim() != 2:
             raise ValueError("node_features must have shape [N, F].")
@@ -422,16 +423,31 @@ class EGNNScoreNet(nn.Module):
         if edge_index.shape[0] != 2:
             raise ValueError("edge_index must have shape [2, E].")
 
+        num_graphs = (int(batch_index.max().item()) + 1) if batch_index is not None else 1
+
         node_states = self.node_embed(node_features)
         time = time.reshape(-1)
         if time.numel() == 1:
             time = time.expand(node_features.size(0))
+        elif batch_index is not None and time.numel() == num_graphs:
+            time = time[batch_index]
         elif time.numel() != node_features.size(0):
-            raise ValueError("time must be scalar or have one value per node.")
+            raise ValueError("time must be scalar, per-batch, or have one value per node.")
 
         node_states = node_states + self.time_embed(time.unsqueeze(-1))
 
-        centered_positions = positions - positions.mean(dim=0, keepdim=True)
+        if batch_index is not None and num_graphs > 1:
+            node_counts = torch.zeros(
+                num_graphs, 1, device=positions.device, dtype=positions.dtype
+            ).index_add_(
+                0, batch_index, torch.ones(positions.size(0), 1, device=positions.device, dtype=positions.dtype)
+            ).clamp(min=1.0)
+            graph_centers = torch.zeros(
+                num_graphs, 3, device=positions.device, dtype=positions.dtype
+            ).index_add_(0, batch_index, positions) / node_counts
+            centered_positions = positions - graph_centers[batch_index]
+        else:
+            centered_positions = positions - positions.mean(dim=0, keepdim=True)
         ligand_mask = None
         if (
             self.config.use_hetero_edges
@@ -479,21 +495,67 @@ class EGNNScoreNet(nn.Module):
         ):
             ligand_states = node_states[ligand_mask]
             ligand_positions = hidden_positions[ligand_mask]
-            ligand_centroid = ligand_positions.mean(dim=0, keepdim=True)
-            ligand_context = ligand_states.mean(dim=0, keepdim=True).expand_as(ligand_states)
-            rigid_weights = self.frame_hetero_global_head(torch.cat([ligand_states, ligand_context], dim=-1))
-            ligand_offsets = ligand_positions - ligand_centroid
-            delta_translation = torch.mean(rigid_weights[:, 0:1] * ligand_offsets, dim=0, keepdim=True)
-            delta_rotation = torch.mean(rigid_weights[:, 1:2] * ligand_offsets, dim=0, keepdim=True)
-            rigid_update = delta_translation.expand_as(ligand_positions) + torch.cross(
-                delta_rotation.expand_as(ligand_positions),
-                ligand_offsets,
-                dim=-1,
-            )
-            score = score.clone()
-            score[ligand_mask] = score[ligand_mask] + rigid_update
-            score[~ligand_mask] = 0.0
-            score[ligand_mask] = score[ligand_mask] - score[ligand_mask].mean(dim=0, keepdim=True)
+            if batch_index is not None and num_graphs > 1:
+                ligand_batch = batch_index[ligand_mask]
+                lig_counts = torch.zeros(
+                    num_graphs, 1, device=positions.device, dtype=positions.dtype
+                ).index_add_(
+                    0, ligand_batch, torch.ones(ligand_states.size(0), 1, device=positions.device, dtype=positions.dtype)
+                ).clamp(min=1.0)
+                lig_centers = torch.zeros(
+                    num_graphs, 3, device=positions.device, dtype=positions.dtype
+                ).index_add_(0, ligand_batch, ligand_positions) / lig_counts
+                ligand_centroid = lig_centers[ligand_batch]
+                lig_context_sum = torch.zeros(
+                    num_graphs, ligand_states.size(-1), device=positions.device, dtype=positions.dtype
+                ).index_add_(0, ligand_batch, ligand_states) / lig_counts
+                ligand_context = lig_context_sum[ligand_batch]
+                rigid_weights = self.frame_hetero_global_head(torch.cat([ligand_states, ligand_context], dim=-1))
+                ligand_offsets = ligand_positions - ligand_centroid
+                w_trans = rigid_weights[:, 0:1] * ligand_offsets
+                w_rot = rigid_weights[:, 1:2] * ligand_offsets
+                trans_sum = torch.zeros(
+                    num_graphs, 3, device=positions.device, dtype=positions.dtype
+                ).index_add_(0, ligand_batch, w_trans) / lig_counts
+                rot_sum = torch.zeros(
+                    num_graphs, 3, device=positions.device, dtype=positions.dtype
+                ).index_add_(0, ligand_batch, w_rot) / lig_counts
+                delta_translation = trans_sum[ligand_batch]
+                delta_rotation = rot_sum[ligand_batch]
+                rigid_update = delta_translation + torch.cross(
+                    delta_rotation,
+                    ligand_offsets,
+                    dim=-1,
+                )
+                score = score.clone()
+                score[ligand_mask] = score[ligand_mask] + rigid_update
+                score[~ligand_mask] = 0.0
+                lig_score_sum = torch.zeros(
+                    num_graphs, 3, device=positions.device, dtype=positions.dtype
+                ).index_add_(0, ligand_batch, score[ligand_mask]) / lig_counts
+                score[ligand_mask] = score[ligand_mask] - lig_score_sum[ligand_batch]
+            else:
+                ligand_centroid = ligand_positions.mean(dim=0, keepdim=True)
+                ligand_context = ligand_states.mean(dim=0, keepdim=True).expand_as(ligand_states)
+                rigid_weights = self.frame_hetero_global_head(torch.cat([ligand_states, ligand_context], dim=-1))
+                ligand_offsets = ligand_positions - ligand_centroid
+                delta_translation = torch.mean(rigid_weights[:, 0:1] * ligand_offsets, dim=0, keepdim=True)
+                delta_rotation = torch.mean(rigid_weights[:, 1:2] * ligand_offsets, dim=0, keepdim=True)
+                rigid_update = delta_translation.expand_as(ligand_positions) + torch.cross(
+                    delta_rotation.expand_as(ligand_positions),
+                    ligand_offsets,
+                    dim=-1,
+                )
+                score = score.clone()
+                score[ligand_mask] = score[ligand_mask] + rigid_update
+                score[~ligand_mask] = 0.0
+                score[ligand_mask] = score[ligand_mask] - score[ligand_mask].mean(dim=0, keepdim=True)
         else:
-            score = score - score.mean(dim=0, keepdim=True)
+            if batch_index is not None and num_graphs > 1:
+                graph_score_means = torch.zeros(
+                    num_graphs, 3, device=positions.device, dtype=positions.dtype
+                ).index_add_(0, batch_index, score) / node_counts
+                score = score - graph_score_means[batch_index]
+            else:
+                score = score - score.mean(dim=0, keepdim=True)
         return score

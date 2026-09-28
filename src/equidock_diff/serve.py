@@ -254,15 +254,23 @@ class DockingEngine:
         return self.model
 
     # -- sampling --------------------------------------------------------------
-    def _stack(self, graphs: list[dict]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _stack(
+        self, graphs: list[dict]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         features = torch.cat([g["features"] for g in graphs], dim=0)
         positions = torch.cat([g["positions"] for g in graphs], dim=0)
         edges, running = [], 0
+        counts = []
         for g in graphs:
             edges.append(g["edge_index"] + running)
-            running += g["features"].size(0)
-        return features, positions, torch.cat(edges, dim=1)
-
+            n_nodes = g["features"].size(0)
+            running += n_nodes
+            counts.append(n_nodes)
+        batch_index = torch.repeat_interleave(
+            torch.arange(len(graphs), device=features.device),
+            torch.tensor(counts, device=features.device),
+        )
+        return features, positions, torch.cat(edges, dim=1), batch_index
     def _score_validity(self, graph: dict, sampled_ligand, reference_ligand, result: PoseResult) -> None:
         """Score one pose with the reference checks, refusing to score an unverified mapping."""
         from .pose_validity import evaluate_pose, write_posed_ligand
@@ -287,7 +295,7 @@ class DockingEngine:
             graphs = [g for g in (self._load_graph(c) for c in chunk) if g is not None]
             if not graphs:
                 continue
-            features, positions, edge_index = self._stack(graphs)
+            features, positions, edge_index, batch_index = self._stack(graphs)
             model = self._ensure_model(features.size(-1))
             if self.device.type == "cuda":
                 torch.cuda.synchronize()
@@ -311,6 +319,7 @@ class DockingEngine:
                     reference_positions=positions,
                     anchor_protein=bool(self._config.frame_hetero_backbone),
                     snr_consistent=self.args.snr_consistent,
+                    batch_index=batch_index,
                 )
             if self.device.type == "cuda":
                 torch.cuda.synchronize()
