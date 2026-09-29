@@ -587,6 +587,9 @@ def build_dataset_examples(args: argparse.Namespace) -> list[ProteinLigandPaths]
 
     if args.dataset_limit > 0:
         examples = examples[: args.dataset_limit]
+    # 5 complexes in PDBbind v2020 have unfeaturizable/corrupted ligand SDFs (e.g. Be valence=4)
+    _CORRUPTED_COMPLEX_IDS = frozenset({"1lvk", "2pll", "3vjs", "3vjt", "4hrd"})
+    examples = [ex for ex in examples if ex.complex_id not in _CORRUPTED_COMPLEX_IDS]
     if not examples:
         raise ValueError(f"No dataset protein-ligand pairs found under {dataset_root}.")
     return examples
