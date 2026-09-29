@@ -29,5 +29,6 @@ class ScoreNet(nn.Module):
         positions: torch.Tensor,
         edge_index: torch.Tensor,
         time: torch.Tensor,
+        batch_index: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return self.backbone(node_features, positions, edge_index, time)
+        return self.backbone(node_features, positions, edge_index, time, batch_index=batch_index)

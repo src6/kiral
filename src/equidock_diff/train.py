@@ -587,6 +587,9 @@ def build_dataset_examples(args: argparse.Namespace) -> list[ProteinLigandPaths]
 
     if args.dataset_limit > 0:
         examples = examples[: args.dataset_limit]
+    # 5 complexes in PDBbind v2020 have unfeaturizable/corrupted ligand SDFs (e.g. Be valence=4)
+    _CORRUPTED_COMPLEX_IDS = frozenset({"1lvk", "2pll", "3vjs", "3vjt", "4hrd"})
+    examples = [ex for ex in examples if ex.complex_id not in _CORRUPTED_COMPLEX_IDS]
     if not examples:
         raise ValueError(f"No dataset protein-ligand pairs found under {dataset_root}.")
     return examples
@@ -646,6 +649,67 @@ def dataset_example_for_step(
         return examples[0]
     return examples[(step_number - 1) % len(examples)]
 
+
+def dataset_examples_for_step(
+    examples: list[ProteinLigandPaths],
+    step_number: int,
+    batch_size: int = 1,
+) -> list[ProteinLigandPaths]:
+    if not examples:
+        raise ValueError("dataset examples cannot be empty.")
+    if batch_size <= 1:
+        return [dataset_example_for_step(examples, step_number)]
+    start = ((step_number - 1) * batch_size) % len(examples)
+    return [examples[(start + i) % len(examples)] for i in range(batch_size)]
+
+
+def stack_dataset_examples(
+    loaded_examples: list[
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, float | None, int | None]
+    ],
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    list[tuple[int, int]],
+    list[torch.Tensor | None],
+]:
+    """Stack individual complex graphs into a single disconnected batch graph.
+
+    Reuses the stacked graph formulation established in ``serve``: node features and
+    coordinates are concatenated, edge indices are offset by running node counts, and
+    rigid frames and score targets remain strictly segmented per complex.
+    """
+    node_features = torch.cat([ex[0] for ex in loaded_examples], dim=0)
+    positions = torch.cat([ex[1] for ex in loaded_examples], dim=0)
+    edges, running = [], 0
+    counts = []
+    complex_slices: list[tuple[int, int]] = []
+    ligand_bond_indices: list[torch.Tensor | None] = []
+
+    for ex in loaded_examples:
+        feat = ex[0]
+        edges.append(ex[2] + running)
+        n_nodes = feat.size(0)
+        complex_slices.append((running, running + n_nodes))
+        ligand_bond_indices.append(ex[3])
+        running += n_nodes
+        counts.append(n_nodes)
+
+    edge_index = torch.cat(edges, dim=1)
+    batch_index = torch.repeat_interleave(
+        torch.arange(len(loaded_examples), device=node_features.device),
+        torch.tensor(counts, device=node_features.device),
+    )
+    return (
+        node_features,
+        positions,
+        edge_index,
+        batch_index,
+        complex_slices,
+        ligand_bond_indices,
+    )
 
 def _expand_schedule_value(value: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     while value.dim() < target.dim():
@@ -1008,103 +1072,216 @@ def training_step_with_breakdown(
     cosine_offset: float = DEFAULT_COSINE_OFFSET,
     cosine_nu: float = DEFAULT_COSINE_NU,
     snr_consistent: bool = False,
+    batch_index: torch.Tensor | None = None,
+    complex_slices: list[tuple[int, int]] | None = None,
+    ligand_bond_indices: list[torch.Tensor | None] | None = None,
+    t: torch.Tensor | None = None,
+    noised_positions: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    t = torch.rand(1, device=clean_positions.device, dtype=clean_positions.dtype).clamp_(
-        0.05, 0.95
-    )
+    if complex_slices is None:
+        slices = [(0, clean_positions.size(0))]
+        bond_indices = [ligand_bond_index]
+    else:
+        slices = complex_slices
+        bond_indices = (
+            ligand_bond_indices
+            if ligand_bond_indices is not None
+            else [ligand_bond_index for _ in slices]
+        )
+
+    num_complexes = len(slices)
+    if t is None:
+        t = torch.rand(
+            num_complexes, device=clean_positions.device, dtype=clean_positions.dtype
+        ).clamp_(0.05, 0.95)
+    elif t.numel() == 1 and num_complexes > 1:
+        t = t.expand(num_complexes)
+
     detected_ligand_mask = infer_ligand_mask(node_features)
-    if frame_hetero_backbone:
-        ligand_mask = detected_ligand_mask
-        noised_positions = clean_positions.clone()
-        noised_positions[ligand_mask], beta_t = noised_positions_for_schedule(
-            clean_positions[ligand_mask],
-            t,
-            beta_min=beta_min,
-            beta_max=beta_max,
-            noise_schedule=noise_schedule,
-            cosine_offset=cosine_offset,
-            cosine_nu=cosine_nu,
-            snr_consistent=snr_consistent,
-        )
-        target_score = torch.zeros_like(clean_positions)
-        target_score[ligand_mask] = clean_positions[ligand_mask] - noised_positions[ligand_mask]
+    resolved_noised_positions = clean_positions.clone() if noised_positions is None else noised_positions.clone()
+    target_score = torch.zeros_like(clean_positions)
+    beta_t_values: list[torch.Tensor] = []
+
+    for c_idx, (start, end) in enumerate(slices):
+        c_slice = slice(start, end)
+        c_clean = clean_positions[c_slice]
+        c_t = t[c_idx : c_idx + 1]
+        c_lig_mask = detected_ligand_mask[c_slice]
+
+        if frame_hetero_backbone:
+            if noised_positions is None:
+                c_noised_lig, c_beta = noised_positions_for_schedule(
+                    c_clean[c_lig_mask],
+                    c_t,
+                    beta_min=beta_min,
+                    beta_max=beta_max,
+                    noise_schedule=noise_schedule,
+                    cosine_offset=cosine_offset,
+                    cosine_nu=cosine_nu,
+                    snr_consistent=snr_consistent,
+                )
+                resolved_noised_positions[start:end][c_lig_mask] = c_noised_lig
+            else:
+                c_noised_lig = resolved_noised_positions[start:end][c_lig_mask]
+                c_beta = beta_schedule_value(
+                    c_t,
+                    beta_min,
+                    beta_max,
+                    noise_schedule=noise_schedule,
+                    cosine_offset=cosine_offset,
+                    cosine_nu=cosine_nu,
+                    exact=snr_consistent,
+                )
+            target_score[start:end][c_lig_mask] = c_clean[c_lig_mask] - c_noised_lig
+            beta_t_values.append(c_beta)
+        else:
+            if noised_positions is None:
+                c_noised, c_beta = noised_positions_for_schedule(
+                    c_clean,
+                    c_t,
+                    beta_min=beta_min,
+                    beta_max=beta_max,
+                    noise_schedule=noise_schedule,
+                    cosine_offset=cosine_offset,
+                    cosine_nu=cosine_nu,
+                    snr_consistent=snr_consistent,
+                )
+                resolved_noised_positions[start:end] = c_noised
+            else:
+                c_noised = resolved_noised_positions[start:end]
+                c_beta = beta_schedule_value(
+                    c_t,
+                    beta_min,
+                    beta_max,
+                    noise_schedule=noise_schedule,
+                    cosine_offset=cosine_offset,
+                    cosine_nu=cosine_nu,
+                    exact=snr_consistent,
+                )
+            target_score[start:end] = c_clean - c_noised
+            beta_t_values.append(c_beta)
+    if batch_index is not None:
+        try:
+            predicted_score = model(
+                node_features,
+                resolved_noised_positions,
+                edge_index,
+                t,
+                batch_index=batch_index,
+            )
+        except TypeError:
+            predicted_score = model(
+                node_features,
+                resolved_noised_positions,
+                edge_index,
+                t,
+            )
     else:
-        ligand_mask = None
-        noised_positions, beta_t = noised_positions_for_schedule(
-            clean_positions,
+        predicted_score = model(
+            node_features,
+            resolved_noised_positions,
+            edge_index,
             t,
-            beta_min=beta_min,
-            beta_max=beta_max,
-            noise_schedule=noise_schedule,
-            cosine_offset=cosine_offset,
-            cosine_nu=cosine_nu,
-            snr_consistent=snr_consistent,
         )
-        target_score = clean_positions - noised_positions
-    predicted_score = model(node_features, noised_positions, edge_index, t)
-    if frame_hetero_backbone and ligand_mask is not None and bool(ligand_mask.any()):
-        predicted_score = predicted_score.clone()
-        predicted_score[~ligand_mask] = 0.0
-        score_loss = torch.mean((predicted_score[ligand_mask] - target_score[ligand_mask]) ** 2)
-    else:
-        score_loss = torch.mean((predicted_score - target_score) ** 2)
-    bond_loss = clean_positions.new_zeros(())
-    shape_loss = clean_positions.new_zeros(())
-    clash_loss = clean_positions.new_zeros(())
-    contact_loss = clean_positions.new_zeros(())
-    predicted_positions = None
-    if (
-        ligand_bond_weight > 0.0
-        or ligand_shape_weight > 0.0
-        or ligand_protein_clash_weight > 0.0
-        or ligand_protein_contact_weight > 0.0
-    ):
-        predicted_positions = noised_positions + predicted_score
-    if ligand_bond_weight > 0.0:
-        assert predicted_positions is not None
-        bond_loss = ligand_bond_length_loss(
-            predicted_positions,
-            clean_positions,
-            ligand_bond_index,
+
+    per_complex_losses = []
+    per_complex_score = []
+    per_complex_bond = []
+    per_complex_shape = []
+    per_complex_clash = []
+    per_complex_contact = []
+
+    for c_idx, (start, end) in enumerate(slices):
+        c_slice = slice(start, end)
+        c_pred_score = predicted_score[c_slice]
+        c_target = target_score[c_slice]
+        c_feat = node_features[c_slice]
+        c_clean = clean_positions[c_slice]
+        c_noised = resolved_noised_positions[c_slice]
+        c_lig_bond = bond_indices[c_idx]
+        c_lig_mask = detected_ligand_mask[c_slice]
+
+        if frame_hetero_backbone and bool(c_lig_mask.any()):
+            c_pred_score = c_pred_score.clone()
+            c_pred_score[~c_lig_mask] = 0.0
+            c_score_loss = torch.mean((c_pred_score[c_lig_mask] - c_target[c_lig_mask]) ** 2)
+        else:
+            c_score_loss = torch.mean((c_pred_score - c_target) ** 2)
+
+        c_bond_loss = c_clean.new_zeros(())
+        c_shape_loss = c_clean.new_zeros(())
+        c_clash_loss = c_clean.new_zeros(())
+        c_contact_loss = c_clean.new_zeros(())
+
+        c_pred_pos = None
+        if (
+            ligand_bond_weight > 0.0
+            or ligand_shape_weight > 0.0
+            or ligand_protein_clash_weight > 0.0
+            or ligand_protein_contact_weight > 0.0
+        ):
+            c_pred_pos = c_noised + c_pred_score
+
+        if ligand_bond_weight > 0.0:
+            assert c_pred_pos is not None
+            c_bond_loss = ligand_bond_length_loss(
+                c_pred_pos,
+                c_clean,
+                c_lig_bond,
+            )
+        if ligand_shape_weight > 0.0:
+            assert c_pred_pos is not None
+            c_shape_loss = ligand_shape_loss(
+                c_pred_pos,
+                c_clean,
+                c_lig_mask if frame_hetero_backbone else None,
+            )
+        if ligand_protein_clash_weight > 0.0:
+            assert c_pred_pos is not None
+            c_clash_loss = ligand_protein_clash_loss(
+                c_pred_pos,
+                c_feat,
+                c_lig_mask,
+            )
+        if ligand_protein_contact_weight > 0.0:
+            assert c_pred_pos is not None
+            c_contact_loss = ligand_protein_contact_loss(
+                c_pred_pos,
+                c_feat,
+                c_lig_mask,
+            )
+
+        c_total_loss = (
+            c_score_loss
+            + ligand_bond_weight * c_bond_loss
+            + ligand_shape_weight * c_shape_loss
+            + ligand_protein_clash_weight * c_clash_loss
+            + ligand_protein_contact_weight * c_contact_loss
         )
-    if ligand_shape_weight > 0.0:
-        assert predicted_positions is not None
-        shape_loss = ligand_shape_loss(
-            predicted_positions,
-            clean_positions,
-            ligand_mask,
-        )
-    if ligand_protein_clash_weight > 0.0:
-        assert predicted_positions is not None
-        clash_loss = ligand_protein_clash_loss(
-            predicted_positions,
-            node_features,
-            detected_ligand_mask,
-        )
-    if ligand_protein_contact_weight > 0.0:
-        assert predicted_positions is not None
-        contact_loss = ligand_protein_contact_loss(
-            predicted_positions,
-            node_features,
-            detected_ligand_mask,
-        )
-    total_loss = (
-        score_loss
-        + ligand_bond_weight * bond_loss
-        + ligand_shape_weight * shape_loss
-        + ligand_protein_clash_weight * clash_loss
-        + ligand_protein_contact_weight * contact_loss
-    )
+        per_complex_losses.append(c_total_loss)
+        per_complex_score.append(c_score_loss)
+        per_complex_bond.append(c_bond_loss)
+        per_complex_shape.append(c_shape_loss)
+        per_complex_clash.append(c_clash_loss)
+        per_complex_contact.append(c_contact_loss)
+
+    total_loss = torch.stack(per_complex_losses).mean()
+    score_loss = torch.stack(per_complex_score).mean()
+    bond_loss = torch.stack(per_complex_bond).mean()
+    shape_loss = torch.stack(per_complex_shape).mean()
+    clash_loss = torch.stack(per_complex_clash).mean()
+    contact_loss = torch.stack(per_complex_contact).mean()
+    beta_t_mean = float(torch.stack(beta_t_values).mean().item())
+
     return (
         total_loss,
-        float(beta_t.item()),
+        beta_t_mean,
         score_loss,
         bond_loss,
         shape_loss,
         clash_loss,
         contact_loss,
     )
-
 
 def evaluate_validation_loss(
     model: nn.Module,
@@ -1272,6 +1449,7 @@ def sample_positions(
     anchor_protein: bool = False,
     sampler_diagnostics: SamplerDiagnostics | None = None,
     snr_consistent: bool = False,
+    batch_index: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, list[torch.Tensor], SamplerDiagnostics | None]:
     ligand_mask = infer_ligand_mask(node_features) if anchor_protein else None
     if anchor_protein:
@@ -1291,7 +1469,10 @@ def sample_positions(
     )
     step_diagnostics: list[SamplerStepDiagnostics] = []
     for loop_idx, (t, dt) in enumerate(schedule):
-        score = model(node_features, positions, edge_index, t)
+        if batch_index is not None:
+            score = model(node_features, positions, edge_index, t, batch_index=batch_index)
+        else:
+            score = model(node_features, positions, edge_index, t)
         if anchor_protein and ligand_mask is not None:
             score = score.clone()
             score[~ligand_mask] = 0.0
@@ -1446,8 +1627,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--use-cross-interface-block cannot be combined with --use-edge-attention in this cycle.")
     if dataset_mode_enabled(args) and (args.protein_path is not None or args.ligand_path is not None):
         raise ValueError("Dataset mode cannot be combined with --protein-path/--ligand-path.")
-    if dataset_mode_enabled(args) and args.batch_size != 1:
-        raise ValueError("Dataset mode currently supports only batch size 1.")
+    if args.batch_size <= 0:
+        raise ValueError("--batch-size must be positive.")
     device = resolve_device(args.device)
     torch.manual_seed(args.seed)
     dataset_examples = build_dataset_examples(args) if dataset_mode_enabled(args) else None
@@ -1535,14 +1716,34 @@ def main(argv: list[str] | None = None) -> int:
     start = perf_counter()
     for step_idx in range(completed_steps + 1, args.steps + 1):
         current_complex_id = None
+        batch_index = None
+        complex_slices = None
+        ligand_bond_indices = None
+
         if dataset_examples is not None:
-            current_example = dataset_example_for_step(dataset_examples, step_idx)
-            node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_dataset_example(
-                current_example,
-                args,
-                device,
+            batch_examples = dataset_examples_for_step(
+                dataset_examples, step_idx, batch_size=args.batch_size
             )
-            current_complex_id = current_example.complex_id
+            if len(batch_examples) == 1:
+                current_example = batch_examples[0]
+                node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_dataset_example(
+                    current_example,
+                    args,
+                    device,
+                )
+                current_complex_id = current_example.complex_id
+            else:
+                loaded = [load_dataset_example(ex, args, device) for ex in batch_examples]
+                (
+                    node_features,
+                    positions,
+                    edge_index,
+                    batch_index,
+                    complex_slices,
+                    ligand_bond_indices,
+                ) = stack_dataset_examples(loaded)
+                ligand_bond_index = None
+                current_complex_id = ",".join(ex.complex_id for ex in batch_examples)
 
         optimizer.zero_grad(set_to_none=True)
         train_snr = bool(args.snr_consistent or args.snr_mode in ("train", "full"))
@@ -1564,15 +1765,17 @@ def main(argv: list[str] | None = None) -> int:
                 cosine_offset=args.cosine_offset,
                 cosine_nu=args.cosine_nu,
                 snr_consistent=train_snr,
+                batch_index=batch_index,
+                complex_slices=complex_slices,
+                ligand_bond_indices=ligand_bond_indices,
             )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         loss_rows.append((step_idx, float(loss.item()), beta_t))
         term_rows.append(
-            (step_idx, float(score_loss), float(bond_loss), float(shape_loss), float(clash_loss))
+            (step_idx, float(score_loss.detach()), float(bond_loss.detach()), float(shape_loss.detach()), float(clash_loss.detach()))
         )
-
         if step_idx == 1 or step_idx == args.steps or step_idx % max(args.steps // 5, 1) == 0:
             line = f"step={step_idx} loss={loss.item():.6f} beta_t={beta_t:.4f}"
             if current_complex_id is not None:

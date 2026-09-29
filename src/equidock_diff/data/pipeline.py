@@ -393,18 +393,35 @@ def load_protein_ligand_graph(
     positions = torch.cat([ligand_graph.pos, protein_positions], dim=0)
     ligand_mask = torch.zeros(node_features.size(0), dtype=torch.bool)
     ligand_mask[: ligand_graph.x.size(0)] = True
-    edge_index = build_radius_edge_index(positions, cutoff=edge_cutoff)
 
-    return build_graph_batch(
-        node_features=node_features,
-        positions=positions,
-        edge_index=edge_index,
-        mask=ligand_mask,
-        ligand_bond_index=ligand_graph.edge_index,
-        cutoff=resolved_cutoff,
+    centered_pos = center_on_ligand(positions, ligand_mask)
+    indicator = ligand_mask.float().unsqueeze(-1)
+    x = torch.cat([node_features, indicator], dim=-1)
+
+    crop_mask = crop_protein_by_distance(centered_pos, ligand_mask, cutoff=resolved_cutoff)
+    if context_policy == "gated":
+        final_mask, retained_protein_nodes = gate_protein_nodes(
+            centered_pos,
+            ligand_mask,
+            crop_mask,
+            protein_node_budget=protein_node_budget,
+        )
+    else:
+        final_mask = crop_mask | ligand_mask
+        retained_protein_nodes = int((final_mask & ~ligand_mask).sum().item())
+
+    cropped_positions = centered_pos[final_mask]
+    new_edge_index = build_radius_edge_index(cropped_positions, cutoff=edge_cutoff)
+    remapped_ligand_bond_index = ligand_graph.edge_index
+
+    return GraphBatch(
+        node_features=x[final_mask],
+        positions=cropped_positions,
+        edge_index=new_edge_index,
+        crop_mask=final_mask,
+        ligand_bond_index=remapped_ligand_bond_index,
         resolved_crop_cutoff=resolved_cutoff,
-        context_policy=context_policy,
-        protein_node_budget=protein_node_budget,
+        retained_protein_nodes=retained_protein_nodes,
     )
 
 
