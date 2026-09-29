@@ -82,8 +82,15 @@ def evaluate_pose(
         kwargs["mol_cond"] = Path(protein)
 
     frame = _buster(resolved_config).bust(**kwargs)
-    checks = [column for column in frame.columns if column not in _NON_CHECK_COLUMNS]
-    failing = tuple(column for column in checks if not bool(frame[column].all()))
+    # Handling skipped/inapplicable checks (e.g. UFF parameters missing for metal-containing ligands):
+    # In PoseBusters, when a check cannot run (e.g. internal_energy on Fe2+ due to missing UFF params),
+    # the module returns NaN. A skipped check is NOT treated as a failure (it does not fail the gate),
+    # and it is excluded from the denominator (checks_run) so that molecules with unparameterised atoms
+    # are neither penalised nor falsely credited with passing unperformed tests.
+    # Only applicable checks (non-NaN) determine the run count and pass/fail verdict.
+    candidate_columns = [column for column in frame.columns if column not in _NON_CHECK_COLUMNS]
+    checks = [col for col in candidate_columns if not frame[col].isna().all()]
+    failing = tuple(col for col in checks if not bool((frame[col] == True).all()))
     return PoseValidity(
         passed=not failing,
         checks_run=len(checks),
