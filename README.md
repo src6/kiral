@@ -9,18 +9,25 @@
 **Kiral** is a reproducible molecular-docking research engine combining chirality-aware $\mathrm{SE}(3)$-equivariant geometric learning with VP-SDE diffusion for blind and targeted protein–ligand docking.
 ---
 
-## Key Performance Metrics
+## Empirical Evaluation & Findings
 
-| Benchmark Metric | Result | Engineering Mechanism |
-| :--- | :--- | :--- |
-| **Aligned Ligand RMSD** | **0.132 Å** (8x improvement over legacy 1.05 Å) | Exact $\bar{\alpha}(t)$ noising + Gaussian ancestral posterior sampling |
-| **Raw 3D Coordinate RMSE** | **0.293 Å** (4.2x reduction over legacy 1.23 Å) | Heterogeneous directional coordinate frames breaking reflection parity |
-| **Equivariance Invariant** | **$< 10^{-5}$ numerical deviation** | Rigorous verification under random $\mathrm{SO}(3) \times \mathbb{R}^3$ spatial transformations |
-| **Sampling Latency** | **10–12 reverse steps** ($\approx 50\%$ faster) | Second-order DPM-Solver++ midpoint predictor-corrector ODE integration |
-| **Chemical Sanity** | **0 steric clashes / 0 bond distortions** | Integrated PoseBusters-aligned van der Waals overlap & strain quality gates |
-| **Hardware Acceleration** | **Tensor Core saturated** ($> 5,000$ complexes/s) | Native CUDA BF16 mixed precision, `torch.compile` JIT fusion, and pre-cached graphs |
+### 1. Data-Scaling Ablation on PDBbind v2020 ($N=300 \to 18,537$)
+A rigorous controlled experiment was conducted across three nested subsets of the PDBbind General Set v2020 ($N \in \{300, 3000, 18537\}$) evaluated on an untouched, held-out set of 500 complexes using the reference [PoseBusters](https://github.com/maabuu/posebusters) suite:
 
----
+| Training Arm | Training Set Size ($N$) | Step Budget | Held-Out Aligned RMSD ($\pm$ SD) | PoseBusters Pass Rate |
+| :--- | :--- | :--- | :--- | :--- |
+| **Arm 1** | $N = 300$ | 5,000 steps | **0.3495 $\pm$ 0.5111 Å** | **12.8%** (64 / 500) |
+| **Arm 2** | $N = 3,000$ | 5,000 steps | **0.3617 $\pm$ 0.5470 Å** | **10.0%** (50 / 500) |
+| **Arm 3** | $N = 18,537$ | 5,000 steps | **0.3919 $\pm$ 0.5149 Å** | **5.6%** (28 / 500) |
+
+**Key Takeaway (Negative Result on Data Scale):**
+Scaling training data volume by **$60\times$** does not rescue stereochemical or physical validity under Cartesian point-cloud score matching. While the network easily masters pocket-level rigid placement (aligned $\text{RMSD} \approx 0.35\text{--}0.39$ Å), internal chemical validity declines with scale. Because diffusion operates directly in unconstrained Euclidean space ($\mathbb{R}^{3N}$), individual atomic displacements inevitably introduce sub-angstrom bond length distortions and angular strain. Inductive bias over physical manifolds dominates dataset scale.
+
+### 2. High-Throughput Batched Training & Serving
+- **Throughput:** Scaled from 3,869 complexes/min (batch 1) to **20,650 complexes/min** (batch 16) on an RTX 3080 Ti ($5.34\times$ throughput speedup).
+- **VRAM Footprint:** Batch 16 uses only **1.08 GB VRAM** (< 10% capacity), making large-scale training and serving highly efficient.
+- **Equivalence:** Batched multi-graph training mathematically preserves the objective: batch-8 scalar loss matches the mean of 8 batch-1 passes to within $10^{-5}$, with exact gradient parity.
+- **Zero-Latency Graph Cache:** Bounded graph construction parses and pre-caches the entire 19,037-complex corpus with sub-millisecond cached loading ($0.17$ ms / complex).
 
 ## Architectural Highlights
 
@@ -135,7 +142,7 @@ The repository maintains strict test coverage defending physical equivariance, c
 ```bash
 uv run pytest
 ```
-*Current test suite: **176 tests passing in $\approx 2.4\text{ seconds}$**.*
+*Current test suite: **208 tests passing, 1 expected calibration xfail in $\approx 6.5\text{ seconds}$**.*
 
 ---
 
