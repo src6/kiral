@@ -170,3 +170,27 @@ def test_write_posed_ligand_refuses_when_the_mapping_cannot_be_verified(tmp_path
     permuted = file_positions[torch.roll(torch.arange(count), 1)]
     assert not write_posed_ligand(ligand, file_positions, permuted, tmp_path / "bad.sdf")
     assert not (tmp_path / "bad.sdf").exists()
+
+
+def test_unrunnable_check_is_excluded_from_denominator_and_does_not_fail(tmp_path):
+    """When a PoseBusters check cannot run (e.g. UFF parameters missing for Fe2+),
+    it does not count as a failure and is excluded from the denominator (checks_run).
+    """
+    # Create ferrocene or a simple iron complex: Fe2+ with no UFF parameters
+    metal_mol = Chem.MolFromSmiles("[Fe+2]")
+    conf = Chem.Conformer(1)
+    conf.SetAtomPosition(0, (0.0, 0.0, 0.0))
+    metal_mol.AddConformer(conf)
+    metal_sdf = tmp_path / "iron.sdf"
+    writer = Chem.SDWriter(str(metal_sdf))
+    writer.write(metal_mol)
+    writer.close()
+
+    validity = evaluate_pose_ligand_only(metal_sdf)
+    # Internal energy cannot run because UFF lacks Fe2+ parameters.
+    # It should pass (not fail the gate), and the skipped check should be excluded from denominator.
+    assert validity.passed, f"Skipped checks must not cause gate failure: {validity.describe()}"
+    assert "internal_energy" not in validity.failing_checks
+    # In 'mol' config, 12 checks total exist; with internal_energy NaN/skipped, exactly 11 run.
+    assert validity.checks_run == 11
+    assert validity.checks_passed == 11
