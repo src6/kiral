@@ -6,10 +6,10 @@ import argparse
 
 import torch
 
-from equidock_diff.models.egnn import EGNNConfig
-from equidock_diff.models.score_net import ScoreNet, ScoreNetConfig
-from equidock_diff.train import build_synthetic_graph, resolve_device
-from equidock_diff.utils.geometry import apply_rigid_transform, random_rotation_matrix
+from kiral.models.egnn import EGNNConfig
+from kiral.models.score_net import ScoreNet, ScoreNetConfig
+from kiral.train import build_synthetic_graph, resolve_device
+from kiral.utils.geometry import apply_rigid_transform, random_rotation_matrix
 
 
 def build_parser() -> argparse.ArgumentParser:

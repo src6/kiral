@@ -14,9 +14,9 @@ from time import perf_counter
 import torch
 from torch import nn
 
-from equidock_diff.data.io import ProteinLigandPaths, load_paths, load_pdbbind_split_paths
-from equidock_diff.data.pipeline import load_protein_ligand_graph, load_protein_ligand_graph_cached
-from equidock_diff.diffusion.schedules import (
+from kiral.data.io import ProteinLigandPaths, load_paths, load_pdbbind_split_paths
+from kiral.data.pipeline import load_protein_ligand_graph, load_protein_ligand_graph_cached
+from kiral.diffusion.schedules import (
     DEFAULT_COSINE_NU,
     DEFAULT_COSINE_OFFSET,
     alpha_bar_for_schedule,
@@ -24,11 +24,11 @@ from equidock_diff.diffusion.schedules import (
     cosine_signal_amplitude,
     step_beta_from_alpha,
 )
-from equidock_diff.diffusion.sde import SDEStep, forward_step, reverse_step
-from equidock_diff.models.egnn import EGNNConfig, infer_ligand_mask
-from equidock_diff.models.score_net import ScoreNet, ScoreNetConfig
-from equidock_diff.models.amp_utils import get_autocast_context, maybe_compile_model
-from equidock_diff.utils.artifacts import (
+from kiral.diffusion.sde import SDEStep, forward_step, reverse_step
+from kiral.models.egnn import EGNNConfig, infer_ligand_mask
+from kiral.models.score_net import ScoreNet, ScoreNetConfig
+from kiral.models.amp_utils import get_autocast_context, maybe_compile_model
+from kiral.utils.artifacts import (
     LOSS_TERM_COLUMNS,
     mean_loss_terms,
     write_experiment_log,
@@ -39,9 +39,9 @@ from equidock_diff.utils.artifacts import (
     write_trajectory_pdb,
     write_validation_loss_csv,
 )
-from equidock_diff.utils.chemistry import ATOM_CLASH_RADII, ATOM_SYMBOLS, evaluate_chemical_validity
-from equidock_diff.utils.geometry import aligned_rmsd, random_rotation_matrix
-from equidock_diff.utils.plotting import maybe_write_plot
+from kiral.utils.chemistry import ATOM_CLASH_RADII, ATOM_SYMBOLS, evaluate_chemical_validity
+from kiral.utils.geometry import aligned_rmsd, random_rotation_matrix
+from kiral.utils.plotting import maybe_write_plot
 
 
 @dataclass(frozen=True)
@@ -397,7 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset-cache-dir",
         type=Path,
-        default=Path("data/.cache/equidock_diff_graphs"),
+        default=Path("data/.cache/kiral_graphs"),
         help="Directory for cached protein-ligand graphs in dataset and single-pair modes",
     )
     return parser
@@ -1965,7 +1965,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.experiment_log is not None:
         write_experiment_log(
             args.experiment_log,
-            command=f"uv run python -m equidock_diff.train {shlex.join(command_argv)}",
+            command=f"uv run python -m kiral.train {shlex.join(command_argv)}",
             device=device,
             graph_source=graph_source,
             args=args,

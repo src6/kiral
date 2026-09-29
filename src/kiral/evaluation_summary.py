@@ -9,7 +9,7 @@ import statistics
 from dataclasses import dataclass
 from pathlib import Path
 
-from equidock_diff.data.io import load_split_complex_ids
+from kiral.data.io import load_split_complex_ids
 
 
 KV_LINE_RE = re.compile(r"^- (?P<key>[^:]+): `(?P<value>.*)`$")

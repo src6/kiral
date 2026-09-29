@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from equidock_diff.utils.plotting import ensure_mplconfigdir
+from kiral.utils.plotting import ensure_mplconfigdir
 
 
 def test_ensure_mplconfigdir_sets_repo_local_default(

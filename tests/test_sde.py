@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from equidock_diff.diffusion.sde import SDEStep, clip_score_norm, forward_step, reverse_step
+from kiral.diffusion.sde import SDEStep, clip_score_norm, forward_step, reverse_step
 
 
 def test_forward_step_preserves_shape_and_finiteness() -> None:

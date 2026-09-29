@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from equidock_diff.data.pipeline import (
+from kiral.data.pipeline import (
     GraphBatch,
     gate_protein_nodes,
     build_complete_edge_index,
@@ -18,7 +18,7 @@ from equidock_diff.data.pipeline import (
     load_protein_ligand_graph_cached,
     resolve_context_crop_cutoff,
 )
-from equidock_diff.data.io import (
+from kiral.data.io import (
     ProteinLigandPaths,
     filter_paths_by_complex_ids,
     load_split_complex_ids,
@@ -448,7 +448,7 @@ def test_load_protein_ligand_graph_cached_backfills_missing_resolved_cutoff(
     cache_path.write_bytes(b"stub")
 
     monkeypatch.setattr(
-        "equidock_diff.data.pipeline.load_graph_batch_cache",
+        "kiral.data.pipeline.load_graph_batch_cache",
         lambda _path: GraphBatch(
             node_features=torch.zeros((2, 17), dtype=torch.float32),
             positions=torch.zeros((2, 3), dtype=torch.float32),

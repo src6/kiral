@@ -6,8 +6,8 @@ import argparse
 from pathlib import Path
 from time import perf_counter
 
-from equidock_diff.data.io import filter_paths_by_complex_ids, load_paths, load_split_complex_ids
-from equidock_diff.data.pipeline import load_protein_ligand_graph_cached
+from kiral.data.io import filter_paths_by_complex_ids, load_paths, load_split_complex_ids
+from kiral.data.pipeline import load_protein_ligand_graph_cached
 
 
 def build_parser() -> argparse.ArgumentParser:

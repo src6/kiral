@@ -8,8 +8,8 @@ import statistics
 from dataclasses import dataclass
 from pathlib import Path
 
-from equidock_diff.data.io import load_split_complex_ids
-from equidock_diff.evaluation_summary import (
+from kiral.data.io import load_split_complex_ids
+from kiral.evaluation_summary import (
     ExperimentRecord,
     discover_records,
     filter_records_by_manifest,

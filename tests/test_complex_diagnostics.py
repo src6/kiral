@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from equidock_diff.complex_diagnostics import compute_row, main
-from equidock_diff.data.io import ProteinLigandPaths
+from kiral.complex_diagnostics import compute_row, main
+from kiral.data.io import ProteinLigandPaths
 
 
 def _write_toy_sdf(path: Path) -> None:

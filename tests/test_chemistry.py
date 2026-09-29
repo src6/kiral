@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from equidock_diff.utils.chemistry import (
+from kiral.utils.chemistry import (
     ATOM_FEATURE_DIM,
     BOND_FEATURE_DIM,
     ATOM_SYMBOLS,

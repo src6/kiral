@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from equidock_diff.research_gate import main
+from kiral.research_gate import main
 
 
 def _write_run_index(path: Path, rows: list[dict[str, str]]) -> None:

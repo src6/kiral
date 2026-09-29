@@ -13,14 +13,14 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from equidock_diff.research_runner import (
+from kiral.research_runner import (
     PlannedRun,
     _group_planned_runs,
     build_parser as build_research_parser,
     expand_run_specs,
     plan_runs,
 )
-from equidock_diff.remote_research_runner import (
+from kiral.remote_research_runner import (
     local_git_sync_state,
     resolve_sync_mode,
     sync_remote_repo,
@@ -473,7 +473,7 @@ def build_local_runner_argv(unit: ScheduledUnit, args: argparse.Namespace) -> li
     return [
         sys.executable,
         "-m",
-        "equidock_diff.research_runner",
+        "kiral.research_runner",
         "--dataset-root",
         str(args.dataset_root),
         * _group_runner_args(unit, compare_against=args.compare_against, save_artifacts=args.save_artifacts),
@@ -486,7 +486,7 @@ def build_remote_runner_argv(unit: ScheduledUnit, args: argparse.Namespace) -> l
     argv = [
         sys.executable,
         "-m",
-        "equidock_diff.remote_research_runner",
+        "kiral.remote_research_runner",
         "--remote-host",
         args.remote_host,
         "--remote-repo",

@@ -1,6 +1,6 @@
 """Diffusion package."""
 
-from equidock_diff.diffusion.schedules import (
+from kiral.diffusion.schedules import (
     DEFAULT_COSINE_NU,
     DEFAULT_COSINE_OFFSET,
     alpha_bar,
@@ -10,7 +10,7 @@ from equidock_diff.diffusion.schedules import (
     integrated_beta,
     linear_beta,
 )
-from equidock_diff.diffusion.sde import SDEStep, forward_step, reverse_step
+from kiral.diffusion.sde import SDEStep, forward_step, reverse_step
 
 __all__ = [
     "DEFAULT_COSINE_NU",

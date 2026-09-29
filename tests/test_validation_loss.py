@@ -13,15 +13,15 @@ from pathlib import Path
 import pytest
 import torch
 
-from equidock_diff import train as train_module
-from equidock_diff.train import (
+from kiral import train as train_module
+from kiral.train import (
     build_parser,
     build_validation_examples,
     evaluate_validation_loss,
     main,
     validation_mode_enabled,
 )
-from equidock_diff.utils.artifacts import (
+from kiral.utils.artifacts import (
     LOSS_TERM_COLUMNS,
     mean_loss_terms,
     write_loss_csv,

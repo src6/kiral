@@ -8,12 +8,12 @@ from typing import Sequence
 
 import torch
 
-from equidock_diff import __version__
-from equidock_diff.models.amp_utils import get_device_benchmark_info
-from equidock_diff.train import main as train_main, resolve_device
-from equidock_diff.resample_from_checkpoint import main as resample_main
-from equidock_diff.serve import main as serve_main
-from equidock_diff.pose_validity import main as validate_main
+from kiral import __version__
+from kiral.models.amp_utils import get_device_benchmark_info
+from kiral.train import main as train_main, resolve_device
+from kiral.resample_from_checkpoint import main as resample_main
+from kiral.serve import main as serve_main
+from kiral.pose_validity import main as validate_main
 
 
 def _run_diagnostics(argv: Sequence[str]) -> int:

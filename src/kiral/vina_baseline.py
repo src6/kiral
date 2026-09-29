@@ -11,7 +11,7 @@ from time import perf_counter
 
 import torch
 
-from equidock_diff.utils.geometry import aligned_rmsd
+from kiral.utils.geometry import aligned_rmsd
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,7 @@ def ligand_centroid_from_sdf(ligand_path: Path) -> torch.Tensor:
 
 
 def reference_ligand_positions_with_rdkit(ligand_path: Path) -> torch.Tensor:
-    from equidock_diff.utils.chemistry import featurize_ligand
+    from kiral.utils.chemistry import featurize_ligand
 
     outcome = featurize_ligand(ligand_path)
     if outcome.skipped or outcome.graph is None:

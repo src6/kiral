@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from equidock_diff.train import (
+from kiral.train import (
     build_parser,
     build_dataset_examples,
     load_dataset_example,

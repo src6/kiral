@@ -2,12 +2,12 @@
 
 ## Purpose
 
-This note records the first full checkpoint-and-resume training run added after introducing `--checkpoint-path`, `--checkpoint-every`, and `--resume-from` in `src/equidock_diff/train.py`.
+This note records the first full checkpoint-and-resume training run added after introducing `--checkpoint-path`, `--checkpoint-every`, and `--resume-from` in `src/kiral/train.py`.
 
 ## Pre-Run Sanity Check
 
 ```bash
-.venv/bin/python -m equidock_diff.sanity_check --trials 8 --device cpu
+.venv/bin/python -m kiral.sanity_check --trials 8 --device cpu
 ```
 
 Observed result:
@@ -18,7 +18,7 @@ Observed result:
 ## Stage 1: Train and Save Checkpoints
 
 ```bash
-.venv/bin/python -m equidock_diff.train \
+.venv/bin/python -m kiral.train \
   --device cpu \
   --steps 150 \
   --learning-rate 3e-4 \
@@ -52,7 +52,7 @@ Observed result:
 ## Stage 2: Resume to a Longer Run
 
 ```bash
-.venv/bin/python -m equidock_diff.train \
+.venv/bin/python -m kiral.train \
   --device cpu \
   --steps 300 \
   --learning-rate 3e-4 \

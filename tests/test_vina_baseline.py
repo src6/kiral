@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from equidock_diff.vina_baseline import (
+from kiral.vina_baseline import (
     build_vina_command,
     evaluate_docked_pose,
     parse_pdbqt_positions,

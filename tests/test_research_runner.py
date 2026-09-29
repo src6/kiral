@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from equidock_diff.research_runner import (
+from kiral.research_runner import (
     build_parser,
     expand_run_specs,
     main,
@@ -379,7 +379,7 @@ def test_main_parallel_execution_writes_completed_status(tmp_path: Path, monkeyp
         planned.checkpoint_path.write_text("checkpoint\n", encoding="utf-8")
         _write_log(
             planned.log_path,
-            command="uv run python -m equidock_diff.train",
+            command="uv run python -m kiral.train",
             seed=planned.spec.seed,
             training_steps=planned.spec.steps,
             sample_steps=planned.spec.sample_steps,
@@ -393,7 +393,7 @@ def test_main_parallel_execution_writes_completed_status(tmp_path: Path, monkeyp
         planned.loss_csv_path.write_text("step,loss,beta_t\n", encoding="utf-8")
         return 0
 
-    monkeypatch.setattr("equidock_diff.research_runner.execute_train", _fake_execute_train)
+    monkeypatch.setattr("kiral.research_runner.execute_train", _fake_execute_train)
 
     result = main(
         [
@@ -429,7 +429,7 @@ def test_main_executes_train_resample_and_comparison(tmp_path: Path, monkeypatch
     _write_log(
         compare_root / "10gs_frame_backbone_cosine_seed42_steps100_crop10_sample25_time1_shape0_clash0_attn0_score10_pos50_log.md",
         command=(
-            "uv run python -m equidock_diff.train --frame-hetero-backbone "
+            "uv run python -m kiral.train --frame-hetero-backbone "
             "--noise-schedule cosine --protein-path data/x/10gs/10gs_protein.pdb"
         ),
         seed=42,
@@ -451,7 +451,7 @@ def test_main_executes_train_resample_and_comparison(tmp_path: Path, monkeypatch
         _write_log(
             planned.log_path,
             command=(
-                "uv run python -m equidock_diff.train --frame-hetero-backbone "
+                "uv run python -m kiral.train --frame-hetero-backbone "
                 f"--noise-schedule {planned.spec.noise_schedule} "
                 f"--protein-path data/x/{planned.spec.complex_id}/{planned.spec.complex_id}_protein.pdb"
             ),
@@ -473,7 +473,7 @@ def test_main_executes_train_resample_and_comparison(tmp_path: Path, monkeypatch
         _write_log(
             planned.log_path,
             command=(
-                "uv run python -m equidock_diff.resample_from_checkpoint "
+                "uv run python -m kiral.resample_from_checkpoint "
                 f"--checkpoint {planned.checkpoint_path}"
             ),
             seed=planned.spec.seed,
@@ -499,9 +499,9 @@ def test_main_executes_train_resample_and_comparison(tmp_path: Path, monkeypatch
         calls.append(f"compare:{compare_against}:{model}:{noise_schedule}")
         return markdown, csv_path
 
-    monkeypatch.setattr("equidock_diff.research_runner.execute_train", _fake_execute_train)
-    monkeypatch.setattr("equidock_diff.research_runner.execute_resample", _fake_execute_resample)
-    monkeypatch.setattr("equidock_diff.research_runner.run_comparison", _fake_run_comparison)
+    monkeypatch.setattr("kiral.research_runner.execute_train", _fake_execute_train)
+    monkeypatch.setattr("kiral.research_runner.execute_resample", _fake_execute_resample)
+    monkeypatch.setattr("kiral.research_runner.run_comparison", _fake_run_comparison)
 
     result = main(
         [

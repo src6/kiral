@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from equidock_diff.diffusion.schedules import (
+from kiral.diffusion.schedules import (
     alpha_bar_for_schedule,
     beta_schedule_value,
     cosine_beta,

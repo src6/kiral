@@ -42,7 +42,7 @@ def run_one(complex_id: str, model: str, schedule: str, seed: int, mode: str, ou
     run_dir = out_dir / run_tag
     run_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "uv", "run", "python", "-m", "equidock_diff.train",
+        "uv", "run", "python", "-m", "kiral.train",
         "--device", DEVICE,
         "--seed", str(seed),
         "--steps", "100",

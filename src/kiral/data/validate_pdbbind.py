@@ -6,7 +6,7 @@ import argparse
 import math
 from pathlib import Path
 
-from equidock_diff.data.io import load_pdbbind_v2020_paths
+from kiral.data.io import load_pdbbind_v2020_paths
 
 
 def _list_stems(base_dir: Path, suffix: str) -> set[str]:

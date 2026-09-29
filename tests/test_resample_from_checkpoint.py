@@ -4,8 +4,8 @@ from pathlib import Path
 
 import torch
 
-from equidock_diff.resample_from_checkpoint import main
-from equidock_diff.train import make_model, save_checkpoint
+from kiral.resample_from_checkpoint import main
+from kiral.train import make_model, save_checkpoint
 
 
 class _Args:
@@ -57,7 +57,7 @@ class _Args:
     dataset_root = None
     dataset_split = None
     dataset_limit = 0
-    dataset_cache_dir = Path("data/.cache/equidock_diff_graphs")
+    dataset_cache_dir = Path("data/.cache/kiral_graphs")
 
 
 def test_resample_from_checkpoint_writes_sampling_artifacts(tmp_path: Path) -> None:

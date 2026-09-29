@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--comparison-csv",
         type=Path,
         required=True,
-        help="CSV output produced by python -m equidock_diff.evaluation_diff",
+        help="CSV output produced by python -m kiral.evaluation_diff",
     )
     parser.add_argument(
         "--metric",

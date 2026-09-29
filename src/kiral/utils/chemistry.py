@@ -542,7 +542,7 @@ def evaluate_chemical_validity(
 
     This is *not* a validity verdict: measured 2026-09-25 it reported every crystal pose on
     the dissertation panel as invalid, because hydrogens carry a carbon radius and the clash
-    threshold takes the stricter of two bounds. Use ``equidock_diff.pose_validity`` (the
+    threshold takes the stricter of two bounds. Use ``kiral.pose_validity`` (the
     reference PoseBusters implementation, exposed as ``kiral validate``) for validity, and
     this for cheap per-step signals.
     """

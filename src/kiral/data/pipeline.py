@@ -6,14 +6,14 @@ from pathlib import Path
 
 import torch
 
-from equidock_diff.utils.chemistry import (
+from kiral.utils.chemistry import (
     ATOM_FEATURE_DIM,
     ATOM_SYMBOL_TO_INDEX,
     FeaturizeOutcome,
     LigandGraph,
     featurize_ligand,
 )
-from equidock_diff.utils.geometry import batched_centroid, relative_positions
+from kiral.utils.geometry import batched_centroid, relative_positions
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,7 @@ This file is for future coding agents working in this repository. It is intended
 
 Primary code lives under:
 
-- `src/equidock_diff/`
+- `src/kiral/`
 - `tests/`
 - curated evidence under `docs/training/`
 
@@ -38,10 +38,10 @@ Muon is intentionally out of scope for now. Do not propose optimizer experiments
 
 Use:
 
-- `equidock_diff.research_runner` for local scratch experiment matrices
-- `equidock_diff.remote_research_runner` for remote scratch runs on the Mac mini
-- `equidock_diff.dual_host_runner` for mixed local+remote scheduling under one tag
-- `equidock_diff.resample_from_checkpoint` when only inference-time parameters change
+- `kiral.research_runner` for local scratch experiment matrices
+- `kiral.remote_research_runner` for remote scratch runs on the Mac mini
+- `kiral.dual_host_runner` for mixed local+remote scheduling under one tag
+- `kiral.resample_from_checkpoint` when only inference-time parameters change
 
 Runner controls now available:
 
@@ -97,7 +97,7 @@ Expected SSH alias on the laptop:
 ```sshconfig
 Host macmini-tailscale
   HostName 10.0.0.1
-  User sadik
+  User runner
   IdentityFile ~/.ssh/id_ed25519
   IdentitiesOnly yes
 ```
@@ -246,7 +246,7 @@ Do not restate broad repo background unless the task is onboarding-oriented.
 Local scratch dry-run:
 
 ```bash
-uv run python -m equidock_diff.research_runner \
+uv run python -m kiral.research_runner \
   --complex-id 10gs \
   --model frame_backbone \
   --noise-schedule cosine \
@@ -257,7 +257,7 @@ uv run python -m equidock_diff.research_runner \
 Remote scratch dry-run:
 
 ```bash
-uv run python -m equidock_diff.remote_research_runner \
+uv run python -m kiral.remote_research_runner \
   --remote-host macmini-tailscale \
   --remote-repo /Users/runner/work/kiral/kiral \
   --remote-dataset-target /tmp/pdbbind_v2020 \
@@ -272,7 +272,7 @@ uv run python -m equidock_diff.remote_research_runner \
 Remote real scratch probe:
 
 ```bash
-uv run python -m equidock_diff.remote_research_runner \
+uv run python -m kiral.remote_research_runner \
   --remote-host macmini-tailscale \
   --remote-repo /Users/runner/work/kiral/kiral \
   --remote-dataset-target /tmp/pdbbind_v2020 \
@@ -290,7 +290,7 @@ uv run python -m equidock_diff.remote_research_runner \
 Remote parallel scratch probe:
 
 ```bash
-uv run python -m equidock_diff.remote_research_runner \
+uv run python -m kiral.remote_research_runner \
   --remote-host macmini-tailscale \
   --remote-repo /Users/runner/work/kiral/kiral \
   --remote-dataset-target /tmp/pdbbind_v2020 \

@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from equidock_diff.dual_host_runner import (
+from kiral.dual_host_runner import (
     UnitMetrics,
     _load_run_metrics,
     build_local_runner_argv,
@@ -205,8 +205,8 @@ def test_build_runner_argvs_include_crop_cutoff_and_cpu_policy(tmp_path: Path) -
     assert "--ligand-protein-contact-weight" in remote_argv
     assert "--use-cross-interface-block" in local_argv
     assert "--use-cross-interface-block" in remote_argv
-    assert "equidock_diff.research_runner" in " ".join(local_argv)
-    assert "equidock_diff.remote_research_runner" in " ".join(remote_argv)
+    assert "kiral.research_runner" in " ".join(local_argv)
+    assert "kiral.remote_research_runner" in " ".join(remote_argv)
 
 
 def test_main_dry_run_writes_combined_plan_and_worker_status(tmp_path: Path) -> None:

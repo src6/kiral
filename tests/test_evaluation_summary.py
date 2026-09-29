@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from equidock_diff.evaluation_summary import (
+from kiral.evaluation_summary import (
     ExperimentRecord,
     assert_expected_combinations_present,
     discover_records,
@@ -24,35 +24,35 @@ from equidock_diff.evaluation_summary import (
 
 
 def test_infer_model_detects_primary_variants() -> None:
-    assert infer_model("uv run python -m equidock_diff.train") == "EGNN baseline"
+    assert infer_model("uv run python -m kiral.train") == "EGNN baseline"
     assert (
-        infer_model("uv run python -m equidock_diff.train --hetgnn-backbone")
+        infer_model("uv run python -m kiral.train --hetgnn-backbone")
         == "heterogeneous frame-based backbone"
     )
     assert (
-        infer_model("uv run python -m equidock_diff.train --complete-frame --ligand-global-node")
+        infer_model("uv run python -m kiral.train --complete-frame --ligand-global-node")
         == "EGNN + complete frames + ligand context"
     )
 
 
 def test_infer_model_detects_combined_egnn_variants() -> None:
     assert (
-        infer_model("uv run python -m equidock_diff.train --hetero-edges --ligand-global-node")
+        infer_model("uv run python -m kiral.train --hetero-edges --ligand-global-node")
         == "EGNN + typed edges + ligand context"
     )
     assert (
-        infer_model("uv run python -m equidock_diff.train --hetero-edges --complete-frame")
+        infer_model("uv run python -m kiral.train --hetero-edges --complete-frame")
         == "EGNN + typed edges + complete frames"
     )
     assert (
         infer_model(
-            "uv run python -m equidock_diff.train --hetero-edges --complete-frame --ligand-global-node"
+            "uv run python -m kiral.train --hetero-edges --complete-frame --ligand-global-node"
         )
         == "EGNN + typed edges + complete frames + ligand context"
     )
     assert (
         infer_model(
-            "uv run python -m equidock_diff.train --frame-hetero-backbone --hetero-edges --complete-frame --ligand-global-node"
+            "uv run python -m kiral.train --frame-hetero-backbone --hetero-edges --complete-frame --ligand-global-node"
         )
         == "heterogeneous frame-based backbone"
     )
@@ -60,7 +60,7 @@ def test_infer_model_detects_combined_egnn_variants() -> None:
 
 def test_infer_model_and_schedule_detect_checkpoint_resample_logs() -> None:
     command = (
-        "uv run python -m equidock_diff.resample_from_checkpoint "
+        "uv run python -m kiral.resample_from_checkpoint "
         "--checkpoint docs/training/panel20/frame_backbone_cosine_inference_diag/checkpoints/"
         "184l_frame_backbone_cosine_longer_training_seed42.pt"
     )
@@ -76,7 +76,7 @@ def test_parse_experiment_log_extracts_metrics(tmp_path: Path) -> None:
             [
                 "# Experiment Log",
                 "",
-                "- Command: `uv run python -m equidock_diff.train --hetgnn-backbone --protein-path data/x/10gs/10gs_protein.pdb`",
+                "- Command: `uv run python -m kiral.train --hetgnn-backbone --protein-path data/x/10gs/10gs_protein.pdb`",
                 "- Graph source: `real_pair`",
                 "- Training steps: `100`",
                 "- Sample steps: `25`",
@@ -298,7 +298,7 @@ def test_discover_records_filters_non_real_pair_logs(
             [
                 "# Experiment Log",
                 "",
-                "- Command: `uv run python -m equidock_diff.train --protein-path data/x/10gs/10gs_protein.pdb`",
+                "- Command: `uv run python -m kiral.train --protein-path data/x/10gs/10gs_protein.pdb`",
                 "- Graph source: `real_pair`",
                 "- Training steps: `100`",
                 "- Sample steps: `25`",
@@ -320,7 +320,7 @@ def test_discover_records_filters_non_real_pair_logs(
             [
                 "# Experiment Log",
                 "",
-                "- Command: `uv run python -m equidock_diff.train --hetgnn-backbone`",
+                "- Command: `uv run python -m kiral.train --hetgnn-backbone`",
                 "- Graph source: `dataset`",
                 "- Training steps: `9`",
                 "- Sample steps: `10`",
@@ -433,9 +433,9 @@ def test_resolve_expected_models_and_seeds_defaults() -> None:
 
 
 def test_infer_noise_schedule_detects_cosine_flag() -> None:
-    assert infer_noise_schedule("uv run python -m equidock_diff.train") == "linear"
+    assert infer_noise_schedule("uv run python -m kiral.train") == "linear"
     assert (
-        infer_noise_schedule("uv run python -m equidock_diff.train --noise-schedule cosine")
+        infer_noise_schedule("uv run python -m kiral.train --noise-schedule cosine")
         == "cosine"
     )
 

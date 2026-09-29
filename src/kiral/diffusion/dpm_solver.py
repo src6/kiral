@@ -5,13 +5,13 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from equidock_diff.diffusion.schedules import (
+from kiral.diffusion.schedules import (
     DEFAULT_COSINE_NU,
     DEFAULT_COSINE_OFFSET,
     alpha_bar_for_schedule,
     beta_schedule_value,
 )
-from equidock_diff.models.egnn import infer_ligand_mask
+from kiral.models.egnn import infer_ligand_mask
 
 
 def dpm_solver_second_order_step(

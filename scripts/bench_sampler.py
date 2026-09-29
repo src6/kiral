@@ -26,8 +26,8 @@ import torch
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
-from equidock_diff.models.amp_utils import get_autocast_context, maybe_compile_model
-from equidock_diff.train import (  # noqa: E402
+from kiral.models.amp_utils import get_autocast_context, maybe_compile_model
+from kiral.train import (  # noqa: E402
     DEFAULT_COSINE_NU,
     DEFAULT_COSINE_OFFSET,
     build_synthetic_graph,

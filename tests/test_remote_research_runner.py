@@ -4,7 +4,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from equidock_diff.remote_research_runner import (
+from kiral.remote_research_runner import (
     GitSyncState,
     build_parser,
     build_remote_dataset_setup_command,
@@ -105,9 +105,9 @@ def test_build_remote_runner_command_includes_research_args() -> None:
 
     command = build_remote_runner_command(args)
 
-    assert "uv run python -m equidock_diff.research_runner" in command
-    assert '"$HOME/.local/bin/uv" run python -m equidock_diff.research_runner' in command
-    assert ".venv/bin/python -m equidock_diff.research_runner" in command
+    assert "uv run python -m kiral.research_runner" in command
+    assert '"$HOME/.local/bin/uv" run python -m kiral.research_runner' in command
+    assert ".venv/bin/python -m kiral.research_runner" in command
     assert "--complex-id 10gs" in command
     assert "--model frame_backbone" in command
     assert "--noise-schedule cosine" in command
@@ -156,10 +156,10 @@ def test_ensure_remote_host_responsive_retries_until_success(monkeypatch: pytest
     import subprocess
 
     monkeypatch.setattr(
-        "equidock_diff.remote_research_runner.run_remote_shell",
+        "kiral.remote_research_runner.run_remote_shell",
         fake_run_remote_shell,
     )
-    monkeypatch.setattr("equidock_diff.remote_research_runner.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("kiral.remote_research_runner.time.sleep", lambda _seconds: None)
 
     ensure_remote_host_responsive("macmini-tailscale", attempts=3, delay_seconds=0.1)
 
@@ -172,12 +172,12 @@ def test_ensure_remote_host_responsive_raises_after_all_attempts(
     import subprocess
 
     monkeypatch.setattr(
-        "equidock_diff.remote_research_runner.run_remote_shell",
+        "kiral.remote_research_runner.run_remote_shell",
         lambda remote_host, command: (_ for _ in ()).throw(
             subprocess.CalledProcessError(255, ["ssh", remote_host, command], stderr="timeout")
         ),
     )
-    monkeypatch.setattr("equidock_diff.remote_research_runner.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("kiral.remote_research_runner.time.sleep", lambda _seconds: None)
 
     with pytest.raises(RuntimeError, match="did not become responsive"):
         ensure_remote_host_responsive("macmini-tailscale", attempts=2, delay_seconds=0.1)
@@ -187,7 +187,7 @@ def test_maybe_start_remote_caffeinate_runs_by_default(monkeypatch: pytest.Monke
     commands: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
-        "equidock_diff.remote_research_runner.run_remote_shell",
+        "kiral.remote_research_runner.run_remote_shell",
         lambda host, command: commands.append((host, command)),
     )
     args = build_parser().parse_args(
@@ -212,7 +212,7 @@ def test_maybe_start_remote_caffeinate_runs_by_default(monkeypatch: pytest.Monke
     assert commands == [
         (
             "macmini-tailscale",
-            "nohup caffeinate -dimsu -t 21600 >/tmp/equidock_diff_caffeinate.log 2>&1 </dev/null &",
+            "nohup caffeinate -dimsu -t 21600 >/tmp/kiral_caffeinate.log 2>&1 </dev/null &",
         )
     ]
 
@@ -221,7 +221,7 @@ def test_maybe_start_remote_caffeinate_can_be_disabled(monkeypatch: pytest.Monke
     commands: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
-        "equidock_diff.remote_research_runner.run_remote_shell",
+        "kiral.remote_research_runner.run_remote_shell",
         lambda host, command: commands.append((host, command)),
     )
     args = build_parser().parse_args(
@@ -257,7 +257,7 @@ def test_fetch_remote_results_always_fetches_status_csv(
     calls: list[list[str]] = []
 
     monkeypatch.setattr(
-        "equidock_diff.remote_research_runner._run_subprocess",
+        "kiral.remote_research_runner._run_subprocess",
         lambda argv, cwd=None, check=True: calls.append(argv),
     )
     args = build_parser().parse_args(

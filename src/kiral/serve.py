@@ -113,7 +113,7 @@ def _pipeline_args(args: argparse.Namespace) -> SimpleNamespace:
         crop_cutoff=args.crop_cutoff,
         edge_cutoff=args.edge_cutoff,
         protein_node_budget=args.protein_node_budget,
-        dataset_cache_dir=Path("data/.cache/equidock_diff_graphs"),
+        dataset_cache_dir=Path("data/.cache/kiral_graphs"),
     )
 
 

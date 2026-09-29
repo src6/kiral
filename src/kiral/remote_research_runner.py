@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from equidock_diff.data.io import load_split_complex_ids
+from kiral.data.io import load_split_complex_ids
 
 
 DEFAULT_LOCAL_REMOTE_ROOT = Path("runs/remote")
@@ -30,7 +30,7 @@ class GitSyncState:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run equidock_diff.research_runner remotely over Tailscale SSH"
+        description="Run kiral.research_runner remotely over Tailscale SSH"
     )
     scope = parser.add_mutually_exclusive_group(required=True)
     scope.add_argument(
@@ -413,11 +413,11 @@ def build_remote_runner_command(args: argparse.Namespace) -> str:
     return (
         f"cd {quoted_repo} && "
         f"if command -v uv >/dev/null 2>&1; then "
-        f"UV_CACHE_DIR=.uv-cache uv run python -m equidock_diff.research_runner {joined_argv}; "
+        f"UV_CACHE_DIR=.uv-cache uv run python -m kiral.research_runner {joined_argv}; "
         f"elif [ -x \"$HOME/.local/bin/uv\" ]; then "
-        f"UV_CACHE_DIR=.uv-cache \"$HOME/.local/bin/uv\" run python -m equidock_diff.research_runner {joined_argv}; "
+        f"UV_CACHE_DIR=.uv-cache \"$HOME/.local/bin/uv\" run python -m kiral.research_runner {joined_argv}; "
         f"elif [ -x .venv/bin/python ]; then "
-        f".venv/bin/python -m equidock_diff.research_runner {joined_argv}; "
+        f".venv/bin/python -m kiral.research_runner {joined_argv}; "
         f"else "
         f"echo 'Neither uv, ~/.local/bin/uv, nor .venv/bin/python is available on the remote host.' >&2; exit 127; "
         f"fi"
@@ -465,7 +465,7 @@ def maybe_start_remote_caffeinate(args: argparse.Namespace) -> None:
         args.remote_host,
         (
             "nohup caffeinate -dimsu -t "
-            f"{int(args.remote_caffeinate_seconds)} >/tmp/equidock_diff_caffeinate.log 2>&1 </dev/null &"
+            f"{int(args.remote_caffeinate_seconds)} >/tmp/kiral_caffeinate.log 2>&1 </dev/null &"
         ),
     )
 

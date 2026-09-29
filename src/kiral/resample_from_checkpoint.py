@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-from equidock_diff.train import (
+from kiral.train import (
     SamplerDiagnostics,
     build_dataset_examples,
     build_parser as build_train_parser,
@@ -24,15 +24,15 @@ from equidock_diff.train import (
     saved_args_to_namespace,
     write_sampler_diagnostics,
 )
-from equidock_diff.utils.artifacts import (
+from kiral.utils.artifacts import (
     write_experiment_log,
     write_ligand_artifacts,
     write_loss_csv,
     write_pdb,
     write_trajectory_pdb,
 )
-from equidock_diff.utils.geometry import aligned_rmsd
-from equidock_diff.utils.plotting import maybe_write_plot
+from kiral.utils.geometry import aligned_rmsd
+from kiral.utils.plotting import maybe_write_plot
 
 
 PATH_OVERRIDE_NAMES = (
@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.experiment_log is not None:
         write_experiment_log(
             args.experiment_log,
-            command=f"uv run python -m equidock_diff.resample_from_checkpoint {shlex.join(command_argv)}",
+            command=f"uv run python -m kiral.resample_from_checkpoint {shlex.join(command_argv)}",
             device=device,
             graph_source="dataset" if dataset_mode_enabled(args) else ("real_pair" if args.protein_path else "synthetic"),
             args=args,

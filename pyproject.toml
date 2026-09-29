@@ -21,9 +21,9 @@ test = [
 ]
 
 [project.scripts]
-kiral = "equidock_diff.cli:main"
-equidock = "equidock_diff.cli:main"
-equidock-diff = "equidock_diff.cli:main"
+kiral = "kiral.cli:main"
+equidock = "kiral.cli:main"
+equidock-diff = "kiral.cli:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

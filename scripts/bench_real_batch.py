@@ -27,9 +27,9 @@ import torch
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "src"))
 
-from equidock_diff.data.io import load_paths  # noqa: E402
-from equidock_diff.models.amp_utils import get_autocast_context, maybe_compile_model  # noqa: E402
-from equidock_diff.train import (  # noqa: E402
+from kiral.data.io import load_paths  # noqa: E402
+from kiral.models.amp_utils import get_autocast_context, maybe_compile_model  # noqa: E402
+from kiral.train import (  # noqa: E402
     DEFAULT_COSINE_NU,
     DEFAULT_COSINE_OFFSET,
     load_dataset_example,
@@ -75,7 +75,7 @@ def pipeline_args(args: argparse.Namespace) -> SimpleNamespace:
         crop_cutoff=args.crop_cutoff,
         edge_cutoff=args.edge_cutoff,
         protein_node_budget=args.protein_node_budget,
-        dataset_cache_dir=_REPO / "data" / ".cache" / "equidock_diff_graphs",
+        dataset_cache_dir=_REPO / "data" / ".cache" / "kiral_graphs",
     )
 
 

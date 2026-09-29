@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from equidock_diff.evaluation_diff import (
+from kiral.evaluation_diff import (
     build_delta_rows,
     discover_selected_records,
     main,
     pair_records,
     summarize_pairs,
 )
-from equidock_diff.evaluation_summary import ExperimentRecord
+from kiral.evaluation_summary import ExperimentRecord
 
 
 def _record(
@@ -147,7 +147,7 @@ def test_discover_selected_records_filters_model_and_schedule(
     _write_log(
         cosine,
         command=(
-            "uv run python -m equidock_diff.train "
+            "uv run python -m kiral.train "
             "--frame-hetero-backbone --noise-schedule cosine "
             "--protein-path data/x/10gs/10gs_protein.pdb"
         ),
@@ -155,7 +155,7 @@ def test_discover_selected_records_filters_model_and_schedule(
     _write_log(
         linear,
         command=(
-            "uv run python -m equidock_diff.train "
+            "uv run python -m kiral.train "
             "--protein-path data/x/10gs/10gs_protein.pdb"
         ),
     )
@@ -182,7 +182,7 @@ def test_main_writes_diff_report_and_missing_pairs(
     _write_log(
         left_dir / "10gs_log.md",
         command=(
-            "uv run python -m equidock_diff.train "
+            "uv run python -m kiral.train "
             "--frame-hetero-backbone --noise-schedule cosine "
             "--protein-path data/x/10gs/10gs_protein.pdb"
         ),
@@ -193,7 +193,7 @@ def test_main_writes_diff_report_and_missing_pairs(
     _write_log(
         left_dir / "11gs_log.md",
         command=(
-            "uv run python -m equidock_diff.train "
+            "uv run python -m kiral.train "
             "--frame-hetero-backbone --noise-schedule cosine "
             "--protein-path data/x/11gs/11gs_protein.pdb"
         ),
@@ -204,7 +204,7 @@ def test_main_writes_diff_report_and_missing_pairs(
     _write_log(
         right_dir / "10gs_log.md",
         command=(
-            "uv run python -m equidock_diff.train "
+            "uv run python -m kiral.train "
             "--frame-hetero-backbone --noise-schedule cosine "
             "--protein-path data/x/10gs/10gs_protein.pdb"
         ),

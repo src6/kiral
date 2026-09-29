@@ -1,6 +1,6 @@
-diff -r /repo/src/equidock_diff/diffusion/schedules.py repo/src/equidock_diff/diffusion/schedules.py
---- /repo/src/equidock_diff/diffusion/schedules.py	2026-03-27 23:50:53.000000000 +0000
-+++ repo/src/equidock_diff/diffusion/schedules.py	2026-09-02 11:32:19.243451889 +0100
+diff -r /repo/src/kiral/diffusion/schedules.py repo/src/kiral/diffusion/schedules.py
+--- /repo/src/kiral/diffusion/schedules.py	2026-03-27 23:50:53.000000000 +0000
++++ repo/src/kiral/diffusion/schedules.py	2026-09-02 11:32:19.243451889 +0100
 @@ -68,3 +68,54 @@
          beta = cosine_beta(t, offset=cosine_offset, nu=cosine_nu)
          return beta.clamp(min=beta_min, max=beta_max)
@@ -56,11 +56,11 @@ diff -r /repo/src/equidock_diff/diffusion/schedules.py repo/src/equidock_diff/di
 +    ).clamp(min=alpha_floor)
 +    beta_dt = torch.clamp_min(torch.log(alpha_prev) - torch.log(alpha_t), 1e-6)
 +    return beta_dt / dt
-diff -r /repo/src/equidock_diff/train.py repo/src/equidock_diff/train.py
---- /repo/src/equidock_diff/train.py	2026-03-27 23:50:53.000000000 +0000
-+++ repo/src/equidock_diff/train.py	2026-09-02 11:56:00.095702346 +0100
+diff -r /repo/src/kiral/train.py repo/src/kiral/train.py
+--- /repo/src/kiral/train.py	2026-03-27 23:50:53.000000000 +0000
++++ repo/src/kiral/train.py	2026-09-02 11:56:00.095702346 +0100
 @@ -18,6 +18,7 @@
- from equidock_diff.diffusion.schedules import (
+ from kiral.diffusion.schedules import (
      DEFAULT_COSINE_NU,
      DEFAULT_COSINE_OFFSET,
 +    alpha_bar_for_schedule,
@@ -265,4 +265,4 @@ diff -r /repo/src/equidock_diff/train.py repo/src/equidock_diff/train.py
              reference_positions=positions,
              anchor_protein=args.frame_hetero_backbone,
          )
-Only in repo/src: equidock_diff.egg-info
+Only in repo/src: kiral.egg-info

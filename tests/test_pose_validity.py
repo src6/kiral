@@ -14,7 +14,7 @@ pytest.importorskip("posebusters")
 from rdkit import Chem  # noqa: E402
 from rdkit.Chem import AllChem  # noqa: E402
 
-from equidock_diff.pose_validity import evaluate_pose, evaluate_pose_ligand_only  # noqa: E402
+from kiral.pose_validity import evaluate_pose, evaluate_pose_ligand_only  # noqa: E402
 
 PANEL = ("10gs", "11gs", "1a30")
 DATA_ROOT_CANDIDATES = (Path("data/pdbbind_v2020"), Path.home() / "data" / "pdbbind_v2020")
@@ -103,7 +103,7 @@ def test_a_reference_ligand_selects_the_redocking_configuration(monkeypatch, tmp
     """Passing a reference must actually enable the reference-dependent checks."""
     import pandas as pd
 
-    from equidock_diff import pose_validity
+    from kiral import pose_validity
 
     seen: dict[str, str] = {}
 
@@ -128,7 +128,7 @@ def test_a_reference_ligand_selects_the_redocking_configuration(monkeypatch, tmp
 
 def test_validate_cli_propagates_the_verdict(monkeypatch, tmp_path):
     """The command must exit non-zero on an invalid pose so scripts can gate on it."""
-    from equidock_diff import pose_validity
+    from kiral import pose_validity
 
     ligand = tmp_path / "ligand.sdf"
     ligand.write_text("")
@@ -151,7 +151,7 @@ def test_write_posed_ligand_refuses_when_the_mapping_cannot_be_verified(tmp_path
         pytest.skip(f"no PDBbind dataset at {DATA_ROOT_CANDIDATES}")
     import torch
 
-    from equidock_diff.pose_validity import write_posed_ligand
+    from kiral.pose_validity import write_posed_ligand
 
     ligand = panel / "10gs" / "10gs_ligand.sdf"
     if not ligand.exists():

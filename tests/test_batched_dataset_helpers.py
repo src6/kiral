@@ -1,5 +1,5 @@
 def test_dataset_examples_for_step_and_stacking():
-    from equidock_diff.train import (
+    from kiral.train import (
         ProteinLigandPaths,
         dataset_examples_for_step,
         stack_dataset_examples,

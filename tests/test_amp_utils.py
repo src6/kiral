@@ -5,7 +5,7 @@ import pytest
 import torch
 from torch import nn
 
-from equidock_diff.models.amp_utils import (
+from kiral.models.amp_utils import (
     get_autocast_context,
     get_device_benchmark_info,
     maybe_compile_model,

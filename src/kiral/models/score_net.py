@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from equidock_diff.models.egnn import EGNNConfig, EGNNScoreNet
+from kiral.models.egnn import EGNNConfig, EGNNScoreNet
 
 
 @dataclass(frozen=True)

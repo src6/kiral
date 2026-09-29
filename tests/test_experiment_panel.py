@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from equidock_diff.data.io import ProteinLigandPaths
-from equidock_diff.experiment_panel import (
+from kiral.data.io import ProteinLigandPaths
+from kiral.experiment_panel import (
     DEFAULT_REQUIRED_COMPLEX_IDS,
     PanelSelectionConfig,
     select_panel,
@@ -31,9 +31,9 @@ def test_select_panel_keeps_required_complexes_first(monkeypatch, tmp_path: Path
     )
     paths = [_entry("13gs"), _entry("10gs"), _entry("11gs"), _entry("1a30"), _entry("16pk"), _entry("184l")]
 
-    monkeypatch.setattr("equidock_diff.experiment_panel.passes_crop_validation", lambda entry, cutoff: True)
-    monkeypatch.setattr("equidock_diff.experiment_panel.ligand_featurizes", lambda entry: True)
-    monkeypatch.setattr("equidock_diff.experiment_panel.smoke_run_is_finite", lambda entry, config: True)
+    monkeypatch.setattr("kiral.experiment_panel.passes_crop_validation", lambda entry, cutoff: True)
+    monkeypatch.setattr("kiral.experiment_panel.ligand_featurizes", lambda entry: True)
+    monkeypatch.setattr("kiral.experiment_panel.smoke_run_is_finite", lambda entry, config: True)
 
     selected = select_panel(paths, config)
 

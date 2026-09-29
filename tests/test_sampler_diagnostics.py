@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from equidock_diff.sampler_diagnostics import load_summary, main
+from kiral.sampler_diagnostics import load_summary, main
 
 
 def _write_log(path: Path, *, complex_id: str) -> None:
@@ -12,7 +12,7 @@ def _write_log(path: Path, *, complex_id: str) -> None:
             [
                 "# Experiment Log",
                 "",
-                f"- Command: `uv run python -m equidock_diff.train --frame-hetero-backbone --noise-schedule cosine --protein-path data/x/{complex_id}/{complex_id}_protein.pdb`",
+                f"- Command: `uv run python -m kiral.train --frame-hetero-backbone --noise-schedule cosine --protein-path data/x/{complex_id}/{complex_id}_protein.pdb`",
                 "- Seed: `42`",
                 "- Graph source: `real_pair`",
                 "- Training steps: `200`",

@@ -14,13 +14,13 @@ from pathlib import Path
 
 import torch
 
-from equidock_diff.data.io import ProteinLigandPaths, filter_paths_by_complex_ids, load_paths, load_split_complex_ids
-from equidock_diff.evaluation_diff import main as evaluation_diff_main
-from equidock_diff.evaluation_summary import parse_experiment_log
-from equidock_diff.resample_from_checkpoint import main as resample_main
-from equidock_diff.train import build_parser as build_train_parser
-from equidock_diff.train import main as train_main
-from equidock_diff.train import resolve_device
+from kiral.data.io import ProteinLigandPaths, filter_paths_by_complex_ids, load_paths, load_split_complex_ids
+from kiral.evaluation_diff import main as evaluation_diff_main
+from kiral.evaluation_summary import parse_experiment_log
+from kiral.resample_from_checkpoint import main as resample_main
+from kiral.train import build_parser as build_train_parser
+from kiral.train import main as train_main
+from kiral.train import resolve_device
 
 
 RUNNER_MODEL_LABELS = {

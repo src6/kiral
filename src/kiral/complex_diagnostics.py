@@ -11,14 +11,14 @@ from pathlib import Path
 
 import torch
 
-from equidock_diff.data.io import (
+from kiral.data.io import (
     ProteinLigandPaths,
     filter_paths_by_complex_ids,
     load_paths,
     load_split_complex_ids,
 )
-from equidock_diff.data.pipeline import load_protein_ligand_graph
-from equidock_diff.utils.chemistry import featurize_ligand
+from kiral.data.pipeline import load_protein_ligand_graph
+from kiral.utils.chemistry import featurize_ligand
 
 
 DEFAULT_CROP_CUTOFF = 10.0

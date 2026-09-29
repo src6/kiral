@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 import torch
 
-from equidock_diff.diffusion.schedules import cosine_signal_amplitude
-from equidock_diff.utils.artifacts import (
+from kiral.diffusion.schedules import cosine_signal_amplitude
+from kiral.utils.artifacts import (
     ligand_mask_from_features,
     write_experiment_log,
     write_ligand_artifacts,
 )
-from equidock_diff.train import (
+from kiral.train import (
     build_parser,
     build_sample_schedule,
     build_dataset_examples,
@@ -71,7 +71,7 @@ class _Args:
     dataset_root = None
     dataset_split = None
     dataset_limit = 0
-    dataset_cache_dir = Path("data/.cache/equidock_diff_graphs")
+    dataset_cache_dir = Path("data/.cache/kiral_graphs")
     sampler_diagnostics_json = None
     seed = 42
 
@@ -341,7 +341,7 @@ def test_load_graph_inputs_uses_cache_for_real_pair_graph(monkeypatch: pytest.Mo
             },
         )()
 
-    monkeypatch.setattr("equidock_diff.train.load_protein_ligand_graph_cached", _fake_cached_loader)
+    monkeypatch.setattr("kiral.train.load_protein_ligand_graph_cached", _fake_cached_loader)
 
     node_features, positions, edge_index, ligand_bond_index, resolved_crop_cutoff, retained_protein_nodes = load_graph_inputs(
         _RealArgs(),
@@ -888,7 +888,7 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
 
     write_experiment_log(
         log_path,
-        command="uv run python -m equidock_diff.train --steps 5",
+        command="uv run python -m kiral.train --steps 5",
         device=torch.device("cpu"),
         graph_source="real_pair",
         args=_LogArgs(),
@@ -906,7 +906,7 @@ def test_write_experiment_log_records_run_metadata(tmp_path: Path) -> None:
     )
 
     contents = log_path.read_text(encoding="utf-8")
-    assert "uv run python -m equidock_diff.train --steps 5" in contents
+    assert "uv run python -m kiral.train --steps 5" in contents
     assert "- Seed: `7`" in contents
     assert "- Graph source: `real_pair`" in contents
     assert "- Node count: `147`" in contents
@@ -926,7 +926,7 @@ def test_write_experiment_log_omits_optional_artifacts_when_absent(tmp_path: Pat
 
     write_experiment_log(
         log_path,
-        command="uv run python -m equidock_diff.train --steps 5",
+        command="uv run python -m kiral.train --steps 5",
         device=torch.device("cpu"),
         graph_source="real_pair",
         args=_Args(),
@@ -1085,7 +1085,7 @@ def test_sample_positions_snr_consistent_ancestral_sampler() -> None:
 
 
 def test_resolve_device_options() -> None:
-    from equidock_diff.train import resolve_device
+    from kiral.train import resolve_device
 
     assert resolve_device("cpu") == torch.device("cpu")
     auto_dev = resolve_device("auto")

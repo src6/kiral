@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from equidock_diff.serve import resolve_model_config
+from kiral.serve import resolve_model_config
 
 
 def _cli(**overrides):
@@ -57,7 +57,7 @@ def test_unrelated_saved_keys_are_ignored():
 def test_serve_rejects_a_checkpoint_without_saved_args(tmp_path):
     """Guessing an architecture silently is worse than refusing to serve."""
     torch = pytest.importorskip("torch")
-    from equidock_diff.serve import DockingEngine, build_parser
+    from kiral.serve import DockingEngine, build_parser
 
     checkpoint = tmp_path / "no_saved_args.pt"
     torch.save({"model_state_dict": {}, "optimizer_state_dict": {}, "completed_steps": 0}, checkpoint)

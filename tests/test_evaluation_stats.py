@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from equidock_diff.evaluation_stats import (
+from kiral.evaluation_stats import (
     bootstrap_confidence_interval,
     exact_sign_permutation_p_value,
     filter_seed_all_rows,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from equidock_diff.diffusion.dpm_solver import (
+from kiral.diffusion.dpm_solver import (
     dpm_solver_second_order_step,
     sample_positions_dpm,
 )

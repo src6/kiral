@@ -23,9 +23,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from equidock_diff.data.io import load_paths  # noqa: E402
-from equidock_diff.train import load_dataset_example  # noqa: E402
-from equidock_diff.utils.chemistry import evaluate_chemical_validity  # noqa: E402
+from kiral.data.io import load_paths  # noqa: E402
+from kiral.train import load_dataset_example  # noqa: E402
+from kiral.utils.chemistry import evaluate_chemical_validity  # noqa: E402
 
 # the repository's documented root is repo-relative; the desktop keeps the dataset in $HOME
 DATA_ROOT_CANDIDATES = (Path("data/pdbbind_v2020"), Path.home() / "data" / "pdbbind_v2020")
@@ -45,7 +45,7 @@ def _pipeline_args() -> SimpleNamespace:
         crop_cutoff=10.0,
         edge_cutoff=4.5,
         protein_node_budget=256,
-        dataset_cache_dir=Path("data/.cache/equidock_diff_graphs"),
+        dataset_cache_dir=Path("data/.cache/kiral_graphs"),
     )
 
 

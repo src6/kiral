@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from equidock_diff.cli import main
+from kiral.cli import main
 
 
 def test_cli_help(capsys: pytest.CaptureFixture[str]) -> None:

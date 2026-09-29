@@ -8,13 +8,13 @@ from pathlib import Path
 
 import torch
 
-from equidock_diff.data.io import ProteinLigandPaths, filter_paths_by_complex_ids, load_paths
-from equidock_diff.data.pipeline import load_protein_ligand_graph
-from equidock_diff.data.validate_pdbbind import count_empty_crops
-from equidock_diff.models.egnn import EGNNConfig
-from equidock_diff.models.score_net import ScoreNet, ScoreNetConfig
-from equidock_diff.train import resolve_device, training_step_with_breakdown
-from equidock_diff.utils.chemistry import featurize_ligand
+from kiral.data.io import ProteinLigandPaths, filter_paths_by_complex_ids, load_paths
+from kiral.data.pipeline import load_protein_ligand_graph
+from kiral.data.validate_pdbbind import count_empty_crops
+from kiral.models.egnn import EGNNConfig
+from kiral.models.score_net import ScoreNet, ScoreNetConfig
+from kiral.train import resolve_device, training_step_with_breakdown
+from kiral.utils.chemistry import featurize_ligand
 
 
 DEFAULT_REQUIRED_COMPLEX_IDS = ("10gs", "11gs", "1a30")

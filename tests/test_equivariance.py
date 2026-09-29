@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from equidock_diff.models.egnn import CrossInterfaceBlock, EGNNConfig, EGNNScoreNet
-from equidock_diff.models.egnn import (
+from kiral.models.egnn import CrossInterfaceBlock, EGNNConfig, EGNNScoreNet
+from kiral.models.egnn import (
     EDGE_TYPE_LIGAND_LIGAND,
     EDGE_TYPE_LIGAND_PROTEIN,
     EDGE_TYPE_PROTEIN_PROTEIN,
@@ -11,7 +11,7 @@ from equidock_diff.models.egnn import (
     infer_ligand_mask,
     scalarize_local_frame,
 )
-from equidock_diff.utils.geometry import (
+from kiral.utils.geometry import (
     aligned_rmsd,
     apply_rigid_transform,
     random_rotation_matrix,
